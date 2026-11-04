@@ -106,6 +106,7 @@ assert edited["priority"] == "high" and edited["due"] == "2026-12-01"
 ok(call("PATCH", f"/api/items/{sub['key']}", {"status": "done"}, cookie=mem))
 ok(call("POST", "/api/items/AB-2/comments", {"body": "looks good"}, cookie=mem), 201)
 full = ok(call("GET", "/api/items/AB-2", cookie=view))
+assert full["comment_count"] == 1
 assert full["children"] == 1 and full["children_done"] == 1 and full["subitems"][0]["key"] == sub["key"]
 assert full["comments"][0]["user"] == "mem" and {a["field"] for a in full["activity"]} >= {"title", "priority", "due_date"}
 
@@ -150,7 +151,7 @@ assert CO({"columns": [{"slug": "ideas", "name": "G"}, {"slug": "ideas", "name":
 assert CO({"columns": no_review})[0] == 400  # review still has a card, with nowhere to go
 assert CO({"columns": no_review, "move": {"review": "review"}})[0] == 400
 made = ok(CO({"columns": [{"name": "Testing & QA"}] + list(reversed(no_review)), "move": {"review": "testing_qa"}}))
-assert made["statuses"][0]["slug"] == "testing_qa" and made["statuses"][-1]["slug"] == "ideas" and len(made["statuses"]) == 5
+assert made["statuses"][0]["slug"] == "testing_qa" and made["statuses"][-1]["slug"] == "ideas" and len(made["statuses"]) == 6
 assert ok(call("GET", f"/api/items/{card}", cookie=mem))["status"] == "testing_qa"
 assert ok(call("GET", f"/api/items/{card}", cookie=mem))["activity"][0]["new"] == "testing_qa"
 assert next(s for s in made["statuses"] if s["slug"] == "done")["is_done"] == 1

@@ -42,7 +42,7 @@ TYPES = ("epic", "story", "task", "bug", "subtask")
 PRIORITIES = ("highest", "high", "medium", "low", "lowest")
 ROLES = ("admin", "member", "viewer")
 DEFAULT_STATUSES = (("ideas", "Ideas", 0), ("selected", "Selected for development", 0),
-                    ("in_progress", "In progress", 0), ("review", "Review", 0), ("done", "Done", 1))
+                    ("in_progress", "In progress", 0), ("blocked", "Blocked", 0), ("review", "Review", 0), ("done", "Done", 1))
 MAX_BODY = 1_000_000
 SESSION_DAYS = 30
 KEY = re.compile(r"^([A-Z][A-Z0-9]{1,9})-(\d+)$")
@@ -201,7 +201,8 @@ ITEM_SELECT = """
 SELECT i.*, p.key AS project_key, u.name AS assignee, c.name AS creator, pi.num AS parent_num, pi.title AS parent_title, pi.type AS parent_type,
   (SELECT COUNT(*) FROM items k WHERE k.parent_id = i.id) AS children,
   (SELECT COUNT(*) FROM items k JOIN statuses s ON s.project_id = k.project_id AND s.slug = k.status
-    WHERE k.parent_id = i.id AND s.is_done = 1) AS children_done
+    WHERE k.parent_id = i.id AND s.is_done = 1) AS children_done,
+  (SELECT COUNT(*) FROM comments m WHERE m.item_id = i.id) AS comment_count
 FROM items i JOIN projects p ON p.id = i.project_id
 LEFT JOIN users u ON u.id = i.assignee_id LEFT JOIN users c ON c.id = i.created_by LEFT JOIN items pi ON pi.id = i.parent_id
 """
@@ -213,7 +214,7 @@ def item_json(row):
             "status": row["status"], "priority": row["priority"], "assignee": row["assignee"], "labels": json.loads(row["labels"]),
             "parent": f"{key}-{row['parent_num']}" if row["parent_num"] else None, "parent_title": row["parent_title"], "parent_type": row["parent_type"],
             "start": row["start_date"], "due": row["due_date"], "ref": row["ref"], "position": row["position"], "children": row["children"],
-            "children_done": row["children_done"], "created_by": row["creator"], "created": row["created"], "updated": row["updated"]}
+            "children_done": row["children_done"], "comment_count": row["comment_count"], "created_by": row["creator"], "created": row["created"], "updated": row["updated"]}
 
 
 def find_project(conn, key):
