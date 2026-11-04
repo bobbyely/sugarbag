@@ -41,7 +41,7 @@ PAGES = {"/": "index.html", "/app.js": "app.js", "/md.js": "md.js", "/style.css"
 TYPES = ("epic", "story", "task", "bug", "subtask")
 PRIORITIES = ("highest", "high", "medium", "low", "lowest")
 ROLES = ("admin", "member", "viewer")
-DEFAULT_STATUSES = (("ideas", "Ideas", 0), ("selected", "Selected for development", 0),
+DEFAULT_STATUSES = (("ideas", "Ideas", 0), ("todo", "To do", 0), ("selected", "Selected for development", 0),
                     ("in_progress", "In progress", 0), ("blocked", "Blocked", 0), ("review", "Review", 0), ("done", "Done", 1))
 MAX_BODY = 1_000_000
 SESSION_DAYS = 30
