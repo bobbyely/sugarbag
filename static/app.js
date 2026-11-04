@@ -436,7 +436,7 @@ function drawTimeline(box) {
   };
   const body = shownGroups.map(g => {
     const title = g.e ? "" : '<div class="tl-loose">No epic</div>';
-    return title + (g.e ? row(g.e, true) : "") + g.hits.filter(dated).map(k => row(k)).join("");
+    return title + (g.e ? row(g.e, true) : "") + g.hits.filter(i => dated(i) && inWindow(i)).map(k => row(k)).join("");
   }).join("");
   box.innerHTML = `<div class="tl-scroll"><div class="tl-chart"><div class="tl-row axis" aria-hidden="true"><span class="tl-name"></span><span class="tl-track">${months.join("")}</span></div>${body}</div></div>${noDates}`;
   const chart = box.querySelector(".tl-chart"), nowAt = dayNumber(today()) - from;
@@ -450,8 +450,9 @@ function drawTimeline(box) {
       t.append(line);
     }
   });
-  // Open at today, so a phone doesn't start months in the past.
-  box.querySelector(".tl-scroll").scrollLeft = Math.max(0, nowAt * DAY_PX - 40);
+  // Open at today when it would otherwise be off-screen, so a phone doesn't start months in the past.
+  const scroller = box.querySelector(".tl-scroll");
+  if (nowAt * DAY_PX > scroller.clientWidth - 200) scroller.scrollLeft = nowAt * DAY_PX - 40;
   box.querySelectorAll("[data-key]").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
 }
 
