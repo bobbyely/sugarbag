@@ -1,0 +1,572 @@
+// Sugarbag's page: signing in, the board, the list and the issue panel. Runs in the browser and talks only to sugarbag.py's /api.
+// No library and no build step. Everything anyone typed goes through esc() or md.js before it reaches the page.
+"use strict";
+const $app = document.getElementById("app");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const TYPE_NAMES = { epic: "Epic", story: "Story", task: "Task", bug: "Bug", subtask: "Sub-task" };
+const PRIORITIES = ["highest", "high", "medium", "low", "lowest"];
+const state = { me: null, projects: [], project: null, items: [], users: [], view: "board", q: "", assignee: "", epic: "", openKey: null, name: "Sugarbag" };
+try { Object.assign(state, JSON.parse(localStorage.getItem("sugarbag") || "{}")); } catch { /* a private window has no storage; the defaults do */ }
+state.me = null; state.openKey = null;
+
+const remember = () => {
+  try { localStorage.setItem("sugarbag", JSON.stringify({ project: state.project, view: state.view })); } catch { /* as above */ }
+};
+
+async function api(method, path, body) {
+  const res = await fetch(path, { method, headers: body !== undefined || method !== "GET" ? { "Content-Type": "application/json" } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => null);
+  if (res.status === 401 && path !== "/api/login") { state.me = null; drawLogin(); throw new Error("Please sign in."); }
+  if (!res.ok) throw new Error(data?.error || "Something went wrong.");
+  return data;
+}
+
+let toastTimer;
+function toast(message) {
+  const t = document.getElementById("toast");
+  t.textContent = message; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+}
+const attempt = fn => async (...args) => { try { return await fn(...args); } catch (e) { toast(e.message); } };
+const canEdit = () => state.me && state.me.role !== "viewer";
+
+// --- Small drawings ---
+
+const ICONS = {
+  epic: '<rect width="16" height="16" rx="2" fill="currentColor"/><path d="M9 3 5 9h3l-1 4 4-6H8z" fill="#fff"/>',
+  story: '<rect width="16" height="16" rx="2" fill="currentColor"/><path d="M5 3.5h6v9L8 10.3 5 12.5z" fill="#fff"/>',
+  task: '<rect width="16" height="16" rx="2" fill="currentColor"/><path d="m4.5 8.2 2.4 2.4 4.6-5" fill="none" stroke="#fff" stroke-width="2"/>',
+  bug: '<rect width="16" height="16" rx="2" fill="currentColor"/><circle cx="8" cy="8" r="3.5" fill="#fff"/>',
+  subtask: '<rect width="16" height="16" rx="2" fill="currentColor"/><path d="M4 4h5v5H4z" fill="none" stroke="#fff" stroke-width="1.5"/><path d="M7 7h5v5H7z" fill="#fff"/>',
+};
+const typeIcon = t => `<svg class="icon ty-${t}" viewBox="0 0 16 16" role="img" aria-label="${TYPE_NAMES[t]}">${ICONS[t]}</svg>`;
+const PRIORITY_PATHS = {
+  highest: "M3 8l5-4 5 4M3 12l5-4 5 4", high: "M3 10l5-4 5 4", medium: "M3 6h10M3 10h10", low: "M3 6l5 4 5-4", lowest: "M3 4l5 4 5-4M3 8l5 4 5-4",
+};
+const priorityIcon = p => `<svg class="icon pr-${p}" viewBox="0 0 16 16" role="img" aria-label="${p} priority"><path d="${PRIORITY_PATHS[p]}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const hash = s => [...s].reduce((n, c) => (n * 31 + c.charCodeAt(0)) >>> 0, 7);
+const avatar = name => name ? `<span class="avatar av${hash(name) % 8}" title="${esc(name)}">${esc(name.slice(0, 2).toUpperCase())}</span>` : '<span class="avatar none" title="Nobody">?</span>';
+const LOGO = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="7" cy="7.5" rx="4.5" ry="3" transform="rotate(-30 7 7.5)" fill="currentColor" opacity=".35"/><ellipse cx="17" cy="7.5" rx="4.5" ry="3" transform="rotate(30 17 7.5)" fill="currentColor" opacity=".35"/><ellipse cx="12" cy="14" rx="5.5" ry="7.5" fill="#e8a317"/><path d="M6.9 11.500h10.200M6.7 15.500h10.6" stroke="#172b4d" stroke-width="2.2"/></svg>';
+const projectInfo = () => state.projects.find(p => p.key === state.project);
+const statusInfo = slug => projectInfo()?.statuses.find(s => s.slug === slug);
+const today = () => new Date().toLocaleDateString("en-CA");
+const when = t => new Date(t * 1000).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+const statusChip = slug => {
+  const s = statusInfo(slug);
+  // The first column is where work waits, so anything past it and not finished counts as under way.
+  const kind = s?.is_done ? "done" : s?.position ? "active" : "";
+  return `<span class="status ${kind}">${esc(s?.name || slug)}</span>`;
+};
+
+// --- Signing in ---
+
+function drawLogin() {
+  $app.innerHTML = `<form class="login"><h1>${LOGO}${esc(state.name)}</h1><p class="err" hidden></p>
+    <label class="field">Name<input class="input" name="name" autocomplete="username" autocapitalize="none" required></label>
+    <label class="field">Password<input class="input" name="password" type="password" autocomplete="current-password" required></label>
+    <button class="btn primary">Sign in</button></form>`;
+  const form = $app.querySelector("form");
+  form.onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api("POST", "/api/login", { name: form.name.value, password: form.password.value });
+      await start();
+    } catch (err) {
+      const p = form.querySelector(".err"); p.textContent = err.message; p.hidden = false;
+    }
+  };
+  form.name.focus();
+}
+
+async function start() {
+  state.name = (await api("GET", "/info")).name;
+  document.title = state.name;
+  try { state.me = await api("GET", "/api/me"); } catch { return; }
+  [state.projects, state.users] = await Promise.all([api("GET", "/api/projects"), api("GET", "/api/users")]);
+  if (!projectInfo()) state.project = state.projects[0]?.key || null;
+  await load();
+  drawShell();
+  openFromAddress();
+}
+
+async function load() {
+  state.items = state.project ? await api("GET", `/api/items?project=${encodeURIComponent(state.project)}`) : [];
+}
+
+// --- The frame around the board ---
+
+function drawShell() {
+  const options = state.projects.map(p => `<option value="${esc(p.key)}"${p.key === state.project ? " selected" : ""}>${esc(p.name)}</option>`).join("");
+  $app.innerHTML = `<div class="top"><span class="brand">${LOGO}<span>${esc(state.name)}</span></span>
+      <label class="sr" for="project">Project</label><select class="input" id="project">${options}</select>
+      <div class="tabs"><button data-view="board" aria-pressed="${state.view === "board"}">Board</button><button data-view="list" aria-pressed="${state.view === "list"}">List</button></div>
+      <span class="spacer"></span>
+      ${canEdit() && state.project ? '<button class="btn primary" id="create">Create</button>' : ""}
+      <button class="btn" id="settings" title="Settings">${esc(state.me.name)}</button></div>
+    <div class="filters"><label class="sr" for="q">Search</label><input class="input" id="q" type="search" placeholder="Search" value="${esc(state.q)}">
+      <label class="sr" for="who">Assignee</label><select class="input" id="who"></select>
+      <label class="sr" for="epic">Epic</label><select class="input" id="epic"></select></div>
+    <div id="view"></div>`;
+  document.getElementById("project").onchange = attempt(async e => { state.project = e.target.value; state.epic = ""; remember(); await load(); drawShell(); });
+  $app.querySelectorAll(".tabs button").forEach(b => { b.onclick = () => { state.view = b.dataset.view; boardShown = false; remember(); drawShell(); }; });
+  document.getElementById("q").oninput = e => { state.q = e.target.value; drawView(); };
+  document.getElementById("who").onchange = e => { state.assignee = e.target.value; drawView(); };
+  document.getElementById("epic").onchange = e => { state.epic = e.target.value; drawView(); };
+  document.getElementById("settings").onclick = attempt(openSettings);
+  const create = document.getElementById("create");
+  if (create) create.onclick = () => openCreate();
+  drawFilters();
+  drawView();
+}
+
+function drawFilters() {
+  const who = document.getElementById("who"), epic = document.getElementById("epic");
+  if (!who) return;
+  who.innerHTML = `<option value="">Anyone</option><option value="-"${state.assignee === "-" ? " selected" : ""}>Nobody</option>` +
+    state.users.filter(u => u.active).map(u => `<option value="${esc(u.name)}"${u.name === state.assignee ? " selected" : ""}>${esc(u.name)}</option>`).join("");
+  epic.innerHTML = '<option value="">All epics</option>' +
+    state.items.filter(i => i.type === "epic").map(i => `<option value="${esc(i.key)}"${i.key === state.epic ? " selected" : ""}>${esc(i.title)}</option>`).join("");
+}
+
+function matches(i) {
+  if (state.assignee && (i.assignee || "-") !== state.assignee) return false;
+  if (state.epic && i.parent !== state.epic && i.key !== state.epic) return false;
+  const q = state.q.trim().toLowerCase();
+  return !q || `${i.key} ${i.title} ${i.labels.join(" ")}`.toLowerCase().includes(q);
+}
+
+function drawView() {
+  const box = document.getElementById("view");
+  if (!box) return;
+  if (!state.project) {
+    box.className = "empty";
+    box.innerHTML = state.me.role === "admin" ? '<p>No projects yet.</p><button class="btn primary" id="first">Make one</button>' : "<p>No projects yet. Ask an admin to make one.</p>";
+    const first = document.getElementById("first");
+    if (first) first.onclick = attempt(openSettings);
+  } else if (state.view === "list") drawList(box);
+  else drawBoard(box);
+}
+
+// --- The board ---
+
+function cardHtml(i) {
+  const overdue = i.due && i.due < today() && !statusInfo(i.status)?.is_done;
+  const tags = (i.parent_type === "epic" ? `<span class="lozenge epic">${esc(i.parent_title)}</span>` : "") +
+    i.labels.map(l => `<span class="lozenge">${esc(l)}</span>`).join("") + (overdue ? `<span class="lozenge overdue">Due ${esc(i.due)}</span>` : "");
+  return `<button class="card${statusInfo(i.status)?.is_done ? " is-done" : ""}" data-key="${esc(i.key)}">
+    <span class="title">${esc(i.title)}</span>${tags ? `<span class="tags">${tags}</span>` : ""}
+    <span class="meta">${typeIcon(i.type)}<span>${esc(i.key)}</span>
+      ${i.children ? `<span class="progress" title="Sub-tasks done">${i.children_done}/${i.children}</span>` : ""}
+      <span class="right">${priorityIcon(i.priority)}${avatar(i.assignee)}</span></span></button>`;
+}
+
+// Epics are themes and sub-tasks are steps inside a card, so neither gets a card of its own.
+const onBoard = i => i.type !== "epic" && i.type !== "subtask" && matches(i);
+
+let boardShown = false;
+
+function drawBoard(box) {
+  const scroll = box.scrollLeft;
+  box.className = "board";
+  box.innerHTML = projectInfo().statuses.map(s => {
+    const cards = state.items.filter(i => i.status === s.slug && onBoard(i)).sort((a, b) => a.position - b.position);
+    return `<section class="column" data-status="${esc(s.slug)}" aria-label="${esc(s.name)}">
+      <header><span>${esc(s.name)}</span><span class="count">${cards.length}</span>${s.is_done ? '<span class="tick" aria-hidden="true">✓</span>' : ""}</header>
+      <div class="cards">${cards.map(cardHtml).join("")}</div>
+      ${canEdit() ? '<button class="add-card">+ Create</button>' : ""}</section>`;
+  }).join("");
+  box.scrollLeft = scroll;
+  // On a phone only one column fits, so open on the first one with work in it.
+  if (!boardShown && innerWidth <= 600) box.querySelector(".column:has(.card)")?.scrollIntoView({ inline: "start", block: "nearest" });
+  boardShown = true;
+  box.querySelectorAll(".add-card").forEach(b => { b.onclick = () => openCreate({ status: b.closest(".column").dataset.status }); });
+  box.querySelectorAll(".card").forEach(c => { if (canEdit()) enableDrag(c); c.onclick = () => { if (!justDragged) openItem(c.dataset.key); }; });
+}
+
+// Pointer events rather than HTML drag and drop, because iPhones don't do HTML drag and drop.
+// A finger must rest on a card first, so a swipe still scrolls the board.
+let justDragged = false, activeDrag = null;
+
+function enableDrag(card) {
+  card.addEventListener("pointerdown", down => {
+    if (down.button) return;
+    const start = { x: down.clientX, y: down.clientY };
+    let timer = null, drag = null;
+    const stop = () => {
+      clearTimeout(timer);
+      removeEventListener("pointermove", move); removeEventListener("pointerup", up); removeEventListener("pointercancel", cancel);
+    };
+    const begin = () => { drag = startDrag(card, start); };
+    const move = e => {
+      const far = Math.hypot(e.clientX - start.x, e.clientY - start.y);
+      if (!drag && down.pointerType !== "touch" && far > 5) begin();
+      if (!drag && down.pointerType === "touch" && far > 8) return stop();  // it's a swipe
+      if (drag) dragTo(drag, e.clientX, e.clientY);
+    };
+    const up = () => { stop(); if (drag) finishDrag(drag); };
+    const cancel = () => { stop(); if (drag) cancelDrag(drag); };
+    if (down.pointerType === "touch") timer = setTimeout(begin, 220);
+    addEventListener("pointermove", move); addEventListener("pointerup", up); addEventListener("pointercancel", cancel);
+  });
+  // A drag starting on a card must never also select text or open the phone's menu.
+  card.addEventListener("contextmenu", e => { if (activeDrag) e.preventDefault(); });
+}
+
+addEventListener("touchmove", e => { if (activeDrag) e.preventDefault(); }, { passive: false });
+
+function startDrag(card, at) {
+  const r = card.getBoundingClientRect();
+  const ghost = card.cloneNode(true); ghost.classList.add("ghost"); ghost.removeAttribute("data-key");
+  ghost.style.width = r.width + "px"; ghost.style.left = r.left + "px"; ghost.style.top = r.top + "px";
+  const place = document.createElement("div"); place.className = "placeholder"; place.style.height = r.height + "px";
+  card.after(place); card.classList.add("lifted");
+  document.body.append(ghost); document.body.classList.add("dragging");
+  if (navigator.vibrate) navigator.vibrate(8);
+  activeDrag = { card, ghost, place, dx: at.x - r.left, dy: at.y - r.top };
+  autoScroll(activeDrag);
+  return activeDrag;
+}
+
+function dragTo(d, x, y) {
+  d.x = x; d.y = y;
+  d.ghost.style.left = x - d.dx + "px"; d.ghost.style.top = y - d.dy + "px";
+  placeCard(d);
+}
+
+// A finger held at the screen's edge sends no more events, so the board keeps scrolling on a timer of its own.
+function autoScroll(d) {
+  if (activeDrag !== d) return;
+  const board = document.querySelector(".board");
+  if (d.x !== undefined && board) {
+    const before = board.scrollLeft;
+    if (d.x < 40) board.scrollLeft -= 10; else if (d.x > innerWidth - 40) board.scrollLeft += 10;
+    if (board.scrollLeft !== before) placeCard(d);
+  }
+  requestAnimationFrame(() => autoScroll(d));
+}
+
+function placeCard(d) {
+  const x = d.x, y = d.y;
+  const under = document.elementFromPoint(Math.min(Math.max(x, 1), innerWidth - 1), y)?.closest(".column");
+  if (!under) return;
+  const list = under.querySelector(".cards");
+  const next = [...list.querySelectorAll(".card:not(.lifted)")].find(c => { const r = c.getBoundingClientRect(); return y < r.top + r.height / 2; });
+  list.insertBefore(d.place, next || null);
+  const box = list.getBoundingClientRect();
+  if (y < box.top + 30) list.scrollTop -= 8; else if (y > box.bottom - 30) list.scrollTop += 8;
+}
+
+function endDrag(d) {
+  d.ghost.remove(); document.body.classList.remove("dragging"); d.card.classList.remove("lifted");
+  activeDrag = null;
+  justDragged = true; setTimeout(() => { justDragged = false; }, 50);
+}
+
+function cancelDrag(d) { d.place.remove(); endDrag(d); }
+
+async function finishDrag(d) {
+  const before = d.place.nextElementSibling?.dataset?.key || null;
+  const status = d.place.closest(".column").dataset.status;
+  const key = d.card.dataset.key;
+  d.place.replaceWith(d.card);
+  endDrag(d);
+  try {
+    await api("POST", `/api/items/${key}/move`, { status, before });
+  } catch (e) { toast(e.message); }
+  await load();
+  drawView();
+}
+
+// --- The list: everything, nested, including what the board leaves out ---
+
+function drawList(box) {
+  box.className = "list";
+  const rows = [];
+  const add = (i, depth) => {
+    rows.push(`<button class="row ${depth === 1 ? "child" : depth === 2 ? "grand" : ""}" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span>
+      <span class="t">${esc(i.title)}</span>${statusChip(i.status)}${priorityIcon(i.priority)}${avatar(i.assignee)}</button>`);
+    state.items.filter(k => k.parent === i.key).sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true })).forEach(k => { if (matches(k) || state.q) add(k, depth + 1); });
+  };
+  // Anything whose parent is hidden still shows, at the top level.
+  const shown = state.items.filter(matches);
+  shown.filter(i => !i.parent || !shown.some(p => p.key === i.parent)).sort((a, b) => (a.type === "epic" ? 0 : 1) - (b.type === "epic" ? 0 : 1) || a.key.localeCompare(b.key, undefined, { numeric: true })).forEach(i => add(i, 0));
+  box.innerHTML = rows.join("") || '<p class="empty">Nothing here.</p>';
+  box.querySelectorAll(".row").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
+}
+
+// --- Create ---
+
+function parentOptions(type, current) {
+  const wanted = type === "subtask" ? ["story", "task", "bug"] : type === "epic" ? [] : ["epic"];
+  return `<option value="">None</option>` + state.items.filter(i => wanted.includes(i.type))
+    .map(i => `<option value="${esc(i.key)}"${i.key === current ? " selected" : ""}>${esc(i.key)} ${esc(i.title)}</option>`).join("");
+}
+const typeOptions = cur => Object.entries(TYPE_NAMES).map(([k, v]) => `<option value="${k}"${k === cur ? " selected" : ""}>${v}</option>`).join("");
+const statusOptions = cur => projectInfo().statuses.map(s => `<option value="${esc(s.slug)}"${s.slug === cur ? " selected" : ""}>${esc(s.name)}</option>`).join("");
+const priorityOptions = cur => PRIORITIES.map(p => `<option value="${p}"${p === cur ? " selected" : ""}>${p[0].toUpperCase() + p.slice(1)}</option>`).join("");
+const userOptions = cur => '<option value="">Nobody</option>' + state.users.filter(u => u.active || u.name === cur).map(u => `<option value="${esc(u.name)}"${u.name === cur ? " selected" : ""}>${esc(u.name)}</option>`).join("");
+
+function shade(html, center) {
+  const s = document.createElement("div");
+  s.className = "shade" + (center ? " center" : "");
+  s.innerHTML = html;
+  s.addEventListener("pointerdown", e => { if (e.target === s) s.dataset.close = "1"; });
+  s.addEventListener("click", e => { if (e.target === s && s.dataset.close) closeShade(s); });
+  document.body.append(s);
+  return s;
+}
+function closeShade(s) {
+  s.remove();
+  if (s.dataset.item) { state.openKey = null; history.replaceState(null, "", location.pathname); }
+}
+addEventListener("keydown", e => { if (e.key === "Escape") { const all = document.querySelectorAll(".shade"); if (all.length) closeShade(all[all.length - 1]); } });
+
+function openCreate(preset = {}) {
+  const type = preset.type || "task";
+  const s = shade(`<form class="dialog"><h2>Create</h2><p class="err" hidden></p>
+    <label class="field">Type<select class="input" name="type">${typeOptions(type)}</select></label>
+    <label class="field">Title<input class="input" name="title" maxlength="300" required></label>
+    <label class="field">Parent<select class="input" name="parent">${parentOptions(type, preset.parent)}</select></label>
+    <div class="fields"><label class="field">Status<select class="input" name="status">${statusOptions(preset.status)}</select></label>
+    <label class="field">Priority<select class="input" name="priority">${priorityOptions("medium")}</select></label>
+    <label class="field">Assignee<select class="input" name="assignee">${userOptions(state.me.name)}</select></label></div>
+    <label class="field">Description<textarea class="input" name="body"></textarea></label>
+    <div class="addbar"><button class="btn primary">Create</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
+  const f = s.querySelector("form");
+  f.type.onchange = () => { f.parent.innerHTML = parentOptions(f.type.value); };
+  s.querySelector("#cancel").onclick = () => closeShade(s);
+  f.onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api("POST", "/api/items", { project: state.project, type: f.type.value, title: f.title.value, parent: f.parent.value || null, status: f.status.value,
+        priority: f.priority.value, assignee: f.assignee.value || null, body: f.body.value });
+      closeShade(s);
+      await refresh();
+    } catch (err) { const p = f.querySelector(".err"); p.textContent = err.message; p.hidden = false; }
+  };
+  f.title.focus();
+}
+
+// --- One item ---
+
+async function refresh() {
+  await load();
+  drawFilters();
+  if (!activeDrag) drawView();
+}
+
+const openItem = attempt(async key => {
+  const item = await api("GET", `/api/items/${encodeURIComponent(key)}`);
+  document.querySelectorAll(".shade[data-item]").forEach(n => n.remove());
+  state.openKey = key;
+  history.replaceState(null, "", "#" + key);
+  drawItem(item);
+});
+
+function drawItem(i) {
+  const ro = canEdit() ? "" : " disabled";
+  const s = shade(`<div class="panel" role="dialog" aria-label="${esc(i.key)}">
+    <div class="panel-top">${typeIcon(i.type)}${i.parent ? `<button class="btn link" data-open="${esc(i.parent)}">${esc(i.parent)}</button> /` : ""}<span>${esc(i.key)}</span>
+      <span class="right">${canEdit() ? '<button class="btn danger" id="del">Delete</button>' : ""}<button class="btn" id="close">Close</button></span></div>
+    <label class="sr" for="title">Title</label><textarea class="title-edit" id="title" rows="1" maxlength="300"${ro}>${esc(i.title)}</textarea>
+    <div class="fields">
+      <label class="field">Status<select class="input" data-f="status"${ro}>${statusOptions(i.status)}</select></label>
+      <label class="field">Assignee<select class="input" data-f="assignee"${ro}>${userOptions(i.assignee)}</select></label>
+      <label class="field">Priority<select class="input" data-f="priority"${ro}>${priorityOptions(i.priority)}</select></label>
+      <label class="field">Type<select class="input" data-f="type"${ro}>${typeOptions(i.type)}</select></label>
+      <label class="field">Parent<select class="input" data-f="parent"${ro}>${parentOptions(i.type, i.parent)}</select></label>
+      <label class="field">Labels<input class="input" data-f="labels" value="${esc(i.labels.join(", "))}"${ro} placeholder="comma, separated"></label>
+      <label class="field">Start<input class="input" type="date" data-f="start" value="${esc(i.start)}"${ro}></label>
+      <label class="field">Due<input class="input" type="date" data-f="due" value="${esc(i.due)}"${ro}></label>
+    </div>
+    <h3 class="section">Description</h3><div id="bodybox"></div>
+    ${i.type === "subtask" ? "" : `<h3 class="section">${i.type === "epic" ? "Issues in this epic" : "Sub-tasks"}${i.children ? ` <span class="quiet">${i.children_done}/${i.children} done</span>` : ""}</h3>
+      <div>${i.subitems.map(k => `<button class="row" data-open="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${esc(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("")}</div>
+      ${canEdit() ? `<form class="addbar" id="addsub"><label class="sr" for="subtitle">New</label><input class="input" id="subtitle" placeholder="Add ${i.type === "epic" ? "a task" : "a sub-task"}" maxlength="300"><button class="btn">Add</button></form>` : ""}`}
+    <h3 class="section">Comments</h3>
+    <div>${i.comments.map(c => `<div class="comment">${avatar(c.user)}<div><span class="who">${esc(c.user || "Someone")}</span><span class="when">${when(c.at)}</span><div class="body-md">${mdToHtml(c.body)}</div></div></div>`).join("") || '<p class="quiet">None yet.</p>'}</div>
+    ${canEdit() ? '<form id="addcomment"><label class="sr" for="comment">Add a comment</label><textarea class="input" id="comment" placeholder="Add a comment"></textarea><div class="addbar"><button class="btn primary">Save</button></div></form>' : ""}
+    <h3 class="section">History</h3>
+    ${i.activity.map(a => `<p class="history"><b>${esc(a.user || "Someone")}</b> changed ${esc(a.field.replace("_id", "").replace("_date", ""))}${a.new !== null && a.field !== "assignee_id" && a.field !== "parent_id" && a.field !== "labels" ? ` to ${esc(a.new)}` : ""}, ${when(a.at)}</p>`).join("") || '<p class="history">Made by ' + esc(i.created_by || "someone") + ", " + when(i.created) + ".</p>"}
+  </div>`);
+  s.dataset.item = i.key;
+  s.querySelector("#close").onclick = () => closeShade(s);
+  s.querySelectorAll("[data-open]").forEach(b => { b.onclick = () => openItem(b.dataset.open); });
+  const reopen = async () => { await refresh(); await openItem(i.key); };
+  // On a refusal, redraw too, so the page doesn't keep showing a change that didn't happen.
+  const save = attempt(async change => {
+    try { await api("PATCH", `/api/items/${i.key}`, change); } finally { await reopen(); }
+  });
+  const title = s.querySelector("#title");
+  // A textarea so a long title wraps on a phone. It grows to fit, and Enter saves rather than adding a line.
+  const fit = () => { title.style.height = "auto"; title.style.height = title.scrollHeight + "px"; };
+  fit(); title.oninput = fit;
+  title.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); title.blur(); } };
+  title.onchange = () => { if (title.value.trim()) save({ title: title.value.replace(/\s*\n\s*/g, " ") }); else title.value = i.title; };
+  s.querySelectorAll("[data-f]").forEach(el => {
+    el.onchange = () => {
+      const f = el.dataset.f;
+      save({ [f]: f === "labels" ? el.value.split(",").map(x => x.trim()).filter(Boolean) : el.value || null });
+    };
+  });
+  // Type and parent depend on each other, so they're saved together. A sub-task can't exist without a parent, so that change waits for one.
+  const typeField = s.querySelector('[data-f="type"]'), parentField = s.querySelector('[data-f="parent"]');
+  typeField.onchange = () => {
+    const kind = typeField.value;
+    const keep = kind !== "epic" && kind !== "subtask" && i.parent_type === "epic";
+    parentField.innerHTML = parentOptions(kind, keep ? i.parent : "");
+    if (kind === "subtask") return toast("Now pick the story, task or bug it belongs to.");
+    save({ type: kind, parent: keep ? i.parent : null });
+  };
+  parentField.onchange = () => save({ type: typeField.value, parent: parentField.value || null });
+  const del = s.querySelector("#del");
+  if (del) del.onclick = attempt(async () => {
+    if (!confirm(`Delete ${i.key}${i.children ? ` and the ${i.children} under it` : ""}? This can't be undone.`)) return;
+    await api("DELETE", `/api/items/${i.key}`);
+    closeShade(s); await refresh();
+  });
+  const bodyBox = s.querySelector("#bodybox");
+  const showBody = () => {
+    bodyBox.innerHTML = `<div class="body" ${canEdit() ? 'tabindex="0" role="button" aria-label="Edit description"' : ""}>${i.body ? mdToHtml(i.body) : '<p class="quiet">Add a description</p>'}</div>`;
+    const area = bodyBox.firstChild;
+    if (!canEdit()) return;
+    const edit = e => {
+      if (e.target.closest("a")) return;
+      bodyBox.innerHTML = `<textarea class="input" id="bodyedit" aria-label="Description">${esc(i.body)}</textarea><div class="addbar"><button class="btn primary" id="bsave">Save</button><button class="btn" id="bcancel">Cancel</button></div>`;
+      bodyBox.querySelector("#bsave").onclick = () => save({ body: bodyBox.querySelector("#bodyedit").value });
+      bodyBox.querySelector("#bcancel").onclick = showBody;
+      bodyBox.querySelector("#bodyedit").focus();
+    };
+    area.onclick = edit;
+    area.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); edit(e); } };
+  };
+  showBody();
+  const sub = s.querySelector("#addsub");
+  if (sub) sub.onsubmit = attempt(async e => {
+    e.preventDefault();
+    const t = s.querySelector("#subtitle").value.trim();
+    if (!t) return;
+    await api("POST", "/api/items", { project: i.project, type: i.type === "epic" ? "task" : "subtask", title: t, parent: i.key, status: statusInfo(i.status)?.is_done ? undefined : i.status });
+    await reopen();
+  });
+  const add = s.querySelector("#addcomment");
+  if (add) add.onsubmit = attempt(async e => {
+    e.preventDefault();
+    const t = s.querySelector("#comment").value.trim();
+    if (!t) return;
+    await api("POST", `/api/items/${i.key}/comments`, { body: t });
+    await reopen();
+  });
+}
+
+function openFromAddress() {
+  const key = location.hash.slice(1);
+  if (/^[A-Z0-9]+-\d+$/.test(key)) openItem(key);
+}
+
+// --- Settings: me, tokens, and for admins, projects and users ---
+
+async function openSettings() {
+  const tokens = await api("GET", "/api/tokens");
+  const admin = state.me.role === "admin";
+  const s = shade(`<div class="dialog"><h2>${esc(state.me.name)} <span class="quiet">(${esc(state.me.role)})</span></h2>
+    ${admin ? `<h3 class="section">Projects</h3>${state.projects.map(p => `<div class="table-row"><b>${esc(p.name)}</b><span class="quiet">${esc(p.key)}</span><button class="btn" data-columns="${esc(p.key)}">Columns</button></div>`).join("")}
+      <form class="addbar" id="addproject"><label class="sr" for="pkey">Key</label><input class="input" id="pkey" placeholder="ABO" maxlength="10" required><label class="sr" for="pname">Name</label><input class="input" id="pname" placeholder="Project name" required><button class="btn">Add</button></form>
+      <h3 class="section">People</h3><div id="people"></div>
+      <form class="addbar" id="adduser"><label class="sr" for="uname">Name</label><input class="input" id="uname" placeholder="Name" autocapitalize="none" required><label class="sr" for="upass">Password</label><input class="input" id="upass" type="password" placeholder="Password" autocomplete="new-password" minlength="8" required><label class="sr" for="urole">Role</label><select class="input" id="urole"><option>member</option><option>viewer</option><option>admin</option></select><button class="btn">Add</button></form>` : ""}
+    ${canEdit() ? `<h3 class="section">API tokens</h3><p class="quiet">For agents and scripts. A token acts as you.</p><div id="tokens">${tokens.map(t => `<div class="table-row"><b>${esc(t.label)}</b><span class="quiet">${t.last_used ? "used " + when(t.last_used) : "not used yet"}</span><button class="btn danger" data-token="${t.id}">Remove</button></div>`).join("")}</div>
+      <div id="newtoken"></div><form class="addbar" id="addtoken"><label class="sr" for="tlabel">What is it for?</label><input class="input" id="tlabel" placeholder="What is it for?" required><button class="btn">Make</button></form>` : ""}
+    <h3 class="section">Change password</h3><form class="addbar" id="pw"><label class="sr" for="oldpw">Old password</label><input class="input" id="oldpw" type="password" placeholder="Old" autocomplete="current-password" required><label class="sr" for="newpw">New password</label><input class="input" id="newpw" type="password" placeholder="New" autocomplete="new-password" minlength="8" required><button class="btn">Change</button></form>
+    <div class="addbar"><button class="btn" id="out">Sign out</button><button class="btn" id="close">Close</button></div></div>`, true);
+  s.querySelector("#close").onclick = () => closeShade(s);
+  const again = async () => { closeShade(s); state.users = await api("GET", "/api/users"); state.projects = await api("GET", "/api/projects"); await openSettings(); };
+  s.querySelector("#out").onclick = attempt(async () => { await api("POST", "/api/logout", {}); closeShade(s); state.me = null; drawLogin(); });
+  s.querySelector("#pw").onsubmit = attempt(async e => {
+    e.preventDefault();
+    await api("POST", "/api/password", { old: s.querySelector("#oldpw").value, new: s.querySelector("#newpw").value });
+    e.target.reset(); toast("Password changed.");
+  });
+  s.querySelectorAll("[data-token]").forEach(b => { b.onclick = attempt(async () => { await api("DELETE", `/api/tokens/${b.dataset.token}`); await again(); }); });
+  const addToken = s.querySelector("#addtoken");
+  if (addToken) addToken.onsubmit = attempt(async e => {
+    e.preventDefault();
+    const made = await api("POST", "/api/tokens", { label: s.querySelector("#tlabel").value });
+    // Shown once: only its fingerprint is stored.
+    s.querySelector("#newtoken").innerHTML = `<p>Copy this now. It won't be shown again.</p><p class="token">${esc(made.token)}</p>`;
+    e.target.reset();
+  });
+  if (!admin) return;
+  s.querySelectorAll("[data-columns]").forEach(b => { b.onclick = () => { closeShade(s); openColumns(b.dataset.columns); }; });
+  const people = s.querySelector("#people");
+  people.innerHTML = state.users.map(u => `<div class="table-row"><b>${esc(u.name)}</b>
+    <label class="sr" for="role-${esc(u.name)}">Role</label><select class="input" id="role-${esc(u.name)}" data-user="${esc(u.name)}">${["admin", "member", "viewer"].map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>
+    <button class="btn" data-active="${esc(u.name)}" data-to="${u.active ? "off" : "on"}">${u.active ? "Switch off" : "Switch on"}</button></div>`).join("");
+  people.querySelectorAll("select[data-user]").forEach(el => { el.onchange = attempt(async () => { try { await api("PATCH", `/api/users/${encodeURIComponent(el.dataset.user)}`, { role: el.value }); } finally { await again(); } }); });
+  people.querySelectorAll("[data-active]").forEach(b => { b.onclick = attempt(async () => { await api("PATCH", `/api/users/${encodeURIComponent(b.dataset.active)}`, { active: b.dataset.to === "on" }); await again(); }); });
+  s.querySelector("#adduser").onsubmit = attempt(async e => {
+    e.preventDefault();
+    await api("POST", "/api/users", { name: s.querySelector("#uname").value, password: s.querySelector("#upass").value, role: s.querySelector("#urole").value });
+    await again();
+  });
+  s.querySelector("#addproject").onsubmit = attempt(async e => {
+    e.preventDefault();
+    const made = await api("POST", "/api/projects", { key: s.querySelector("#pkey").value, name: s.querySelector("#pname").value });
+    state.project = state.project || made.key; remember();
+    closeShade(s); state.projects = await api("GET", "/api/projects"); await load(); drawShell();
+  });
+}
+
+// --- Columns: edited as a list, then saved all at once ---
+
+async function openColumns(key) {
+  const project = state.projects.find(p => p.key === key);
+  const items = await api("GET", `/api/items?project=${encodeURIComponent(key)}`);
+  const count = slug => items.filter(i => i.status === slug).length;
+  const cols = project.statuses.map(c => ({ slug: c.slug, name: c.name, is_done: !!c.is_done }));
+  const removed = [];
+  const s = shade(`<form class="dialog"><h2>Columns: ${esc(project.name)}</h2><p class="err" hidden></p><div id="cols"></div>
+    <button class="btn" type="button" id="addcol">Add a column</button><div id="moves"></div>
+    <div class="addbar"><button class="btn primary">Save</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
+  const box = s.querySelector("#cols"), moves = s.querySelector("#moves");
+  const draw = () => {
+    box.innerHTML = cols.map((c, n) => `<div class="table-row" data-n="${n}">
+      <label class="sr" for="col${n}">Name</label><input class="input col-name" id="col${n}" maxlength="40" value="${esc(c.name)}" required>
+      <label class="done-box"><input type="checkbox" data-done${c.is_done ? " checked" : ""}> Done</label>
+      <button class="btn" type="button" data-up aria-label="Move ${esc(c.name)} up"${n ? "" : " disabled"}>↑</button>
+      <button class="btn" type="button" data-down aria-label="Move ${esc(c.name)} down"${n < cols.length - 1 ? "" : " disabled"}>↓</button>
+      <button class="btn danger" type="button" data-remove aria-label="Remove ${esc(c.name)}"${cols.length > 1 ? "" : " disabled"}>✕</button></div>`).join("");
+    box.querySelectorAll(".table-row").forEach(row => {
+      const n = +row.dataset.n;
+      row.querySelector(".col-name").oninput = e => { cols[n].name = e.target.value; };
+      row.querySelector("[data-done]").onchange = e => { cols[n].is_done = e.target.checked; };
+      row.querySelector("[data-up]").onclick = () => { [cols[n - 1], cols[n]] = [cols[n], cols[n - 1]]; draw(); };
+      row.querySelector("[data-down]").onclick = () => { [cols[n + 1], cols[n]] = [cols[n], cols[n + 1]]; draw(); };
+      row.querySelector("[data-remove]").onclick = () => { const [gone] = cols.splice(n, 1); if (gone.slug && count(gone.slug)) removed.push(gone); draw(); };
+    });
+    // Only columns that already exist can take cards: a new one has no slug until it's saved.
+    const targets = cols.filter(c => c.slug);
+    moves.innerHTML = removed.map((r, n) => `<label class="field">Move the ${count(r.slug)} items in ${esc(r.name)} to
+      <select class="input" data-move="${n}">${targets.map(c => `<option value="${esc(c.slug)}"${c.slug === r.to ? " selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>`).join("");
+    moves.querySelectorAll("select").forEach(el => { removed[+el.dataset.move].to = el.value; });
+    moves.querySelectorAll("select").forEach(el => { el.onchange = () => { removed[+el.dataset.move].to = el.value; }; });
+  };
+  draw();
+  s.querySelector("#addcol").onclick = () => { cols.push({ name: "", is_done: false }); draw(); box.querySelector(".table-row:last-child input").focus(); };
+  s.querySelector("#cancel").onclick = () => closeShade(s);
+  s.querySelector("form").onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api("PUT", `/api/projects/${encodeURIComponent(key)}/columns`, { columns: cols, move: Object.fromEntries(removed.map(r => [r.slug, r.to])) });
+      closeShade(s);
+      state.projects = await api("GET", "/api/projects");
+      await load(); drawShell();
+    } catch (err) { const p = s.querySelector(".err"); p.textContent = err.message; p.hidden = false; }
+  };
+}
+
+// Agents change things too, so keep the board fresh while it's on screen.
+setInterval(() => {
+  if (state.me && !document.hidden && !activeDrag && !document.querySelector(".shade")) attempt(refresh)();
+}, 15000);
+
+start().catch(() => drawLogin());

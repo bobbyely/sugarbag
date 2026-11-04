@@ -1,0 +1,14 @@
+# Run Sugarbag on its own: docker compose -f compose.example.yml up -d --build
+# Then add the first user: docker compose -f compose.example.yml exec sugarbag python3 /app/sugarbag.py adduser yourname
+services:
+  sugarbag:
+    build: .
+    restart: unless-stopped
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:8094:8094"  # this machine only; put a proxy with https in front to host it for others
+    environment:
+      - SUGARBAG_NAME=Sugarbag
+      # - SUGARBAG_SECURE_COOKIE=1   # turn on when served over https
+    volumes:
+      - ./data:/data  # make this folder first, owned by user 1000
