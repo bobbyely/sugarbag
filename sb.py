@@ -106,14 +106,14 @@ def do_list(conf, args):
             print(f"\n{column['name']} ({column['slug']})")
         for i in rows:
             steps = f" [{i['children_done']}/{i['children']}]" if i["children"] else ""
-            print(f"  {i['key']:<9}{i['title']}{steps}" + (f"  @{i['assignee']}" if i["assignee"] else "") + (f"  -> {i['next']}" if i["next"] else ""))
+            print(f"  {i['key']:<9}{i['title']}{steps}" + (f"  @{i['assignee']}" if i["assignee"] else "") + (f"  -> {i['next']}" if i.get("next") else ""))
 
 
 def do_show(conf, args):
     i = call(conf, "GET", "/api/items/" + args.key)
     print(f"{i['key']} {i['title']}\n{i['type']}, {i['status']}, {i['priority']}" + (f", {i['assignee']}" if i["assignee"] else "") +
           (f", under {i['parent']}" if i["parent"] else ""))
-    if i["next"]:
+    if i.get("next"):
         print("Next: " + i["next"])
     if i["body"]:
         print("\n" + i["body"])
