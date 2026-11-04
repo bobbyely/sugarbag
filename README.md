@@ -61,6 +61,10 @@ curl -H "Authorization: Bearer $SUGARBAG_TOKEN" -H "Content-Type: application/js
   http://127.0.0.1:8094/api/items
 ```
 
+## From the command line
+
+`sb.py` wraps the API for agents and scripts: `sb.py list`, `show`, `new`, `move`, `comment`, `edit`, `columns`. See the top of the file for its settings.
+
 ## Security
 
 Passwords are hashed with scrypt, and tokens and sessions are stored only as fingerprints. A signed-in browser's write requests must come from Sugarbag's own page. Text from issues is escaped before it reaches the page. There's no https of its own: to host Sugarbag beyond your own machine or private network, put a proxy with https in front and set `SUGARBAG_SECURE_COOKIE=1`.

@@ -179,7 +179,7 @@ function cardHtml(i) {
   const s = statusInfo(i.status);
   const days = Math.floor((Date.now() / 1000 - (i.status_since || i.created)) / 86400);
   const age = !s?.is_done && days >= 1 ? `<span class="age${s?.position && days >= STALE_DAYS ? " stale" : ""}" title="${days} day${days === 1 ? "" : "s"} in this column">${days}d</span>` : "";
-  const tags = (i.parent_type === "epic" ? `<span class="lozenge epic">${esc(i.parent_title)}</span>` : "") +
+  const tags = (i.parent ? `<span class="lozenge${i.parent_type === "epic" ? " epic" : " parent"}">${esc(i.parent_title)}</span>` : "") +
     i.labels.map(l => `<span class="lozenge">${esc(l)}</span>`).join("") + (overdue ? `<span class="lozenge overdue">Due ${esc(new Date(i.due + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short" }))}</span>` : "");
   return `<button class="card${statusInfo(i.status)?.is_done ? " is-done" : ""}" data-key="${esc(i.key)}">
     <span class="title">${mdInline(i.title)}</span>${tags ? `<span class="tags">${tags}</span>` : ""}
@@ -189,7 +189,6 @@ function cardHtml(i) {
       <span class="right">${age}${i.priority === "medium" ? "" : priorityIcon(i.priority)}${avatar(i.assignee)}</span></span></button>`;
 }
 
-// Epics are themes and sub-tasks are steps inside a card, so neither gets a card of its own.
 const hiddenColumns = () => state.me?.hidden?.[state.project] || [];
 const onBoard = i => i.type !== "epic" && i.type !== "subtask" && matches(i);
 
