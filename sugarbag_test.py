@@ -275,6 +275,9 @@ assert sb("move", key, "in_progress")[0] == 0 and "in_progress" in sb("show", ke
 assert sb("comment", key, "-", stdin="Did the thing")[0] == 0 and "Did the thing" in sb("show", key)[1]
 assert sb("edit", key, "--title", "Renamed", "--assignee", "ann")[0] == 0 and "Renamed" in sb("show", key)[1]
 assert key in sb("list", "--mine")[1]
+epic_key = ok(call("POST", "/api/items", {"project": "AB", "type": "epic", "title": "An epic for finding"}, cookie=ann), 201)["key"]
+assert epic_key not in sb("list")[1] and epic_key in sb("list", "--all", "--q", "An epic for")[1]  # so an agent can find it before making a duplicate
+ok(call("DELETE", f"/api/items/{epic_key}", cookie=ann))
 assert sb("move", key, "nope")[0] != 0 and "Sugarbag said no" in sb("move", key, "nope")[2]
 assert sb("show", "AB-99999")[0] != 0
 env["SUGARBAG_TOKEN"] = ""

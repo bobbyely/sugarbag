@@ -154,7 +154,9 @@ function drawFilters() {
 
 function matches(i) {
   if (state.assignee && (i.assignee || "-") !== state.assignee) return false;
-  if (state.epic && i.parent !== state.epic && i.key !== state.epic) return false;
+  // A sub-task's epic is one level further up, through its parent.
+  const parent = i.type === "subtask" ? state.items.find(p => p.key === i.parent) : null;
+  if (state.epic && i.parent !== state.epic && i.key !== state.epic && parent?.parent !== state.epic) return false;
   const q = state.q.trim().toLowerCase();
   return !q || `${i.key} ${i.title} ${i.labels.join(" ")}`.toLowerCase().includes(q);
 }

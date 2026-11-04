@@ -6,7 +6,7 @@ Settings come from the environment, or from ~/.config/sugarbag/env as KEY=value 
   SUGARBAG_TOKEN    an API token. Keep that file private (chmod 600)
   SUGARBAG_PROJECT  the project key, so you needn't type it each time
 
-  sb.py list                          what's open, by column. --all includes finished work; --mine, --q WORDS filter it
+  sb.py list                          what's open, by column. --all adds everything: finished work, epics, waiting sub-tasks. --mine, --q WORDS filter it
   sb.py show AB-12                    one ticket, with its sub-tasks, comments and history
   sb.py new "Title" --body-file -     make a ticket. Also --type --parent --status --priority --assignee --label
   sb.py move AB-12 in_progress        move to a column, by its short name; sb.py columns lists them
@@ -101,7 +101,7 @@ def do_list(conf, args):
         if column["is_done"] and not args.all:
             continue
         working = column["position"] >= 2 and not column["is_done"]  # the same rule as the board: a sub-task shows only while being worked on
-        rows = [i for i in items if i["status"] == column["slug"] and i["type"] != "epic" and (working or i["type"] != "subtask") and (not me or i["assignee"] == me)]
+        rows = [i for i in items if i["status"] == column["slug"] and (args.all or (i["type"] != "epic" and (working or i["type"] != "subtask"))) and (not me or i["assignee"] == me)]
         if rows:
             print(f"\n{column['name']} ({column['slug']})")
         for i in rows:
