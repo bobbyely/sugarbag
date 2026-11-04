@@ -17,7 +17,7 @@ Or with Docker: see `compose.example.yml`.
 
 - **Board:** starts with Ideas (the backlog), Selected for development, In progress, Blocked, Review and Done. Each project can have its own columns. Drag with a mouse. On a phone, rest a finger on a card first, so a swipe still scrolls.
 - **Levels:** Epic > Story, Task or Bug > Sub-task. Stories and tasks sit level, so nobody has to decide which contains which. A sub-task gets its own card while it's in a working column, past the first two and not finished, with its parent's name on it.
-- **Issues:** keys such as `ABO-12`, priority, assignee, labels, start and due dates, Markdown description, comments, history. An issue opens in the middle of the screen (`/#ABO-12`) or as its own page (`/?issue=ABO-12`).
+- **Issues:** keys such as `ABO-12`, priority, assignee (the owner), a one-line next step such as "Ann tests it on the phone" (shown on the card under the title), labels, start and due dates, Markdown description, comments, history. An issue opens in the middle of the screen (`/#ABO-12`) or as its own page (`/?issue=ABO-12`).
 - **List:** everything, nested, including epics and sub-tasks.
 - **Your view:** hide or show columns for yourself. Light, dark, or following the device. Change your own name.
 - **Cards show age:** days in the current column, turning amber after 14 days in a working column.
@@ -44,7 +44,7 @@ JSON. Sign in with `Authorization: Bearer <token>`. Make a token in the page's s
 | `POST /api/projects` | `{key, name}`. Admin. |
 | `PUT /api/projects/ABO/columns` | `{columns: [{slug, name, is_done}], move: {old_slug: new_slug}}`: the whole list, in order. Leave out `slug` for a new column. A removed column with items in it needs a `move`. Admin. |
 | `GET /api/items?project=ABO` | Items. Also `status`, `type`, `assignee`, `label`, `parent`, `ref`, `q`. |
-| `POST /api/items` | `{project, title, type, parent, status, priority, assignee, labels, start, due, body, ref}`. `ref` is your own unique name for it: sending the same one twice gets a 409, so a script is safe to rerun. |
+| `POST /api/items` | `{project, title, type, parent, status, priority, assignee, next, labels, start, due, body, ref}`. `ref` is your own unique name for it: sending the same one twice gets a 409, so a script is safe to rerun. |
 | `GET /api/items/ABO-12` | One item, with its sub-items, comments and history. |
 | `PATCH /api/items/ABO-12` | Change any of those fields. |
 | `POST /api/items/ABO-12/move` | `{status, before}`: to a column, above the card `before`, or at the bottom. |
@@ -63,7 +63,7 @@ curl -H "Authorization: Bearer $SUGARBAG_TOKEN" -H "Content-Type: application/js
 
 ## From the command line
 
-`sb.py` wraps the API for agents and scripts: `sb.py list`, `show`, `new`, `move`, `comment`, `edit`, `columns`. See the top of the file for its settings.
+`sb.py` wraps the API for agents and scripts (`--next "..."` sets the next step; `list --who NAME` shows one person's tickets): `sb.py list`, `show`, `new`, `move`, `comment`, `edit`, `columns`. See the top of the file for its settings.
 
 ## Security
 

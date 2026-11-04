@@ -6,12 +6,12 @@ Settings come from the environment, or from ~/.config/sugarbag/env as KEY=value 
   SUGARBAG_TOKEN    an API token. Keep that file private (chmod 600)
   SUGARBAG_PROJECT  the project key, so you needn't type it each time
 
-  sb.py list                          what's open, by column. --all adds everything: finished work, epics, waiting sub-tasks. --mine, --q WORDS filter it
+  sb.py list                          what's open, by column. --all adds everything: finished work, epics, waiting sub-tasks. --mine, --who NAME, --q WORDS filter it
   sb.py show AB-12                    one ticket, with its sub-tasks, comments and history
-  sb.py new "Title" --body-file -     make a ticket. Also --type --parent --status --priority --assignee --label
+  sb.py new "Title" --body-file -     make a ticket. Also --type --parent --status --priority --assignee --next --label
   sb.py move AB-12 in_progress        move to a column, by its short name; sb.py columns lists them
   sb.py comment AB-12 "What I did"    add a comment. Use - to read it from standard input
-  sb.py edit AB-12 --title "New"      change a field. Also --body-file --priority --assignee --label --parent --due --start
+  sb.py edit AB-12 --title "New"      change a field. Also --body-file --priority --assignee --next --label --parent --due --start
 
 Standard library only. Prints no secrets. Checked by sugarbag_test.py.
 """
@@ -79,7 +79,7 @@ def read_text(value):
 
 def fields(args):
     out = {}
-    for name in ("type", "status", "priority", "assignee", "parent", "start", "due", "title"):
+    for name in ("type", "status", "priority", "assignee", "parent", "start", "due", "title", "next"):
         value = getattr(args, name, None)
         if value is not None:
             out[name] = value or None
@@ -96,7 +96,7 @@ def do_list(conf, args):
     if args.q:
         query["q"] = args.q
     items = call(conf, "GET", "/api/items?" + urllib.parse.urlencode(query))
-    me = call(conf, "GET", "/api/me")["name"] if args.mine else None
+    me = args.who or (call(conf, "GET", "/api/me")["name"] if args.mine else None)
     for column in columns_of(conf, project):
         if column["is_done"] and not args.all:
             continue
@@ -106,13 +106,15 @@ def do_list(conf, args):
             print(f"\n{column['name']} ({column['slug']})")
         for i in rows:
             steps = f" [{i['children_done']}/{i['children']}]" if i["children"] else ""
-            print(f"  {i['key']:<9}{i['title']}{steps}" + (f"  @{i['assignee']}" if i["assignee"] else ""))
+            print(f"  {i['key']:<9}{i['title']}{steps}" + (f"  @{i['assignee']}" if i["assignee"] else "") + (f"  -> {i['next']}" if i["next"] else ""))
 
 
 def do_show(conf, args):
     i = call(conf, "GET", "/api/items/" + args.key)
     print(f"{i['key']} {i['title']}\n{i['type']}, {i['status']}, {i['priority']}" + (f", {i['assignee']}" if i["assignee"] else "") +
           (f", under {i['parent']}" if i["parent"] else ""))
+    if i["next"]:
+        print("Next: " + i["next"])
     if i["body"]:
         print("\n" + i["body"])
     if i["subitems"]:
@@ -158,6 +160,7 @@ def main():
     listing = sub.add_parser("list")
     listing.add_argument("--all", action="store_true")
     listing.add_argument("--mine", action="store_true")
+    listing.add_argument("--who", help="only this person's tickets")
     listing.add_argument("--q")
     listing.set_defaults(fn=do_list)
     sub.add_parser("columns").set_defaults(fn=do_columns)
@@ -179,7 +182,7 @@ def main():
         else:
             p.add_argument("key")
             p.add_argument("--title")
-        for flag in ("type", "status", "priority", "assignee", "parent", "start", "due"):
+        for flag in ("type", "status", "priority", "assignee", "next", "parent", "start", "due"):
             if name == "edit" and flag == "status":
                 continue  # moving has its own command, which keeps the card's place in the column right
             p.add_argument("--" + flag)

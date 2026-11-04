@@ -104,6 +104,10 @@ assert call("GET", "/api/items/AB-999", cookie=mem)[0] == 404
 # Editing, history, comments and progress.
 edited = ok(call("PATCH", "/api/items/AB-2", {"title": "Board", "priority": "high", "due": "2026-12-01"}, cookie=mem))
 assert edited["priority"] == "high" and edited["due"] == "2026-12-01"
+assert story["next"] == "" and ok(call("PATCH", "/api/items/AB-2", {"next": "  Ann checks the <b>draft</b> "}, cookie=mem))["next"] == "Ann checks the <b>draft</b>"
+assert call("PATCH", "/api/items/AB-2", {"next": "x" * 201}, cookie=mem)[0] == 400
+assert ok(call("POST", "/api/items", {"project": "AB", "title": "n", "next": "Bo reviews"}, cookie=mem), 201)["next"] == "Bo reviews"
+assert any(a["field"] == "next" for a in ok(call("GET", "/api/items/AB-2", cookie=mem))["activity"])
 ok(call("PATCH", f"/api/items/{sub['key']}", {"status": "done"}, cookie=mem))
 ok(call("POST", "/api/items/AB-2/comments", {"body": "looks good"}, cookie=mem), 201)
 full = ok(call("GET", "/api/items/AB-2", cookie=view))
@@ -176,7 +180,7 @@ ok(call("DELETE", f"/api/items/{aged['key']}", cookie=mem))
 
 # An older database gets the new columns, with sensible dates.
 old_path = os.path.join(tmp.name, "old.db")
-old_schema = sugarbag.SCHEMA.replace(", hidden_columns TEXT NOT NULL DEFAULT '{}'", "").replace(" status_since INTEGER,", "")
+old_schema = sugarbag.SCHEMA.replace(", hidden_columns TEXT NOT NULL DEFAULT '{}'", "").replace(" status_since INTEGER,", "").replace(" next TEXT NOT NULL DEFAULT '',", "")
 old = sqlite3.connect(old_path)
 old.executescript(old_schema)
 old.execute("INSERT INTO projects (key, name) VALUES ('OL', 'Old')")
@@ -191,6 +195,7 @@ sugarbag.init_db()
 sugarbag.init_db()  # and again, harmlessly
 check = sugarbag.connect()
 assert [r["status_since"] for r in check.execute("SELECT status_since FROM items ORDER BY id")] == [500, 700]
+assert [r["next"] for r in check.execute("SELECT next FROM items ORDER BY id")] == ["", ""]  # old rows keep working, with no next step
 check.close()
 os.environ["SUGARBAG_DB"] = saved
 
@@ -275,6 +280,8 @@ assert sb("move", key, "in_progress")[0] == 0 and "in_progress" in sb("show", ke
 assert sb("comment", key, "-", stdin="Did the thing")[0] == 0 and "Did the thing" in sb("show", key)[1]
 assert sb("edit", key, "--title", "Renamed", "--assignee", "ann")[0] == 0 and "Renamed" in sb("show", key)[1]
 assert key in sb("list", "--mine")[1]
+assert sb("edit", key, "--next", "Ann writes the test")[0] == 0 and "Next: Ann writes the test" in sb("show", key)[1]
+assert "-> Ann writes the test" in sb("list", "--who", "ann")[1] and key not in sb("list", "--who", "mem")[1]
 epic_key = ok(call("POST", "/api/items", {"project": "AB", "type": "epic", "title": "An epic for finding"}, cookie=ann), 201)["key"]
 assert epic_key not in sb("list")[1] and epic_key in sb("list", "--all", "--q", "An epic for")[1]  # so an agent can find it before making a duplicate
 ok(call("DELETE", f"/api/items/{epic_key}", cookie=ann))

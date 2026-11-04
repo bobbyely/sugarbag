@@ -184,7 +184,7 @@ function cardHtml(i) {
   const tags = (i.parent ? `<span class="lozenge${i.parent_type === "epic" ? " epic" : " parent"}">${esc(i.parent_title)}</span>` : "") +
     i.labels.map(l => `<span class="lozenge">${esc(l)}</span>`).join("") + (overdue ? `<span class="lozenge overdue">Due ${esc(new Date(i.due + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short" }))}</span>` : "");
   return `<button class="card${statusInfo(i.status)?.is_done ? " is-done" : ""}" data-key="${esc(i.key)}">
-    <span class="title">${mdInline(i.title)}</span>${tags ? `<span class="tags">${tags}</span>` : ""}
+    <span class="title">${mdInline(i.title)}</span>${i.next ? `<span class="next" title="Next step">&rarr; ${esc(i.next)}</span>` : ""}${tags ? `<span class="tags">${tags}</span>` : ""}
     <span class="meta">${typeIcon(i.type)}<span>${esc(i.key)}</span>
       ${i.children ? `<span class="progress" title="Sub-tasks done">${i.children_done}/${i.children}</span>` : ""}
       ${i.comment_count ? `<span class="progress" title="Comments">${COMMENT_ICON}${i.comment_count}</span>` : ""}
@@ -446,7 +446,8 @@ function drawItem(i) {
     <div class="item-grid">
       <aside class="item-side">
         <div class="key-fields"><label class="field">Status<select class="input" data-f="status"${ro}>${statusOptions(i.status)}</select></label>
-        <label class="field">Assignee<select class="input" data-f="assignee"${ro}>${userOptions(i.assignee)}</select></label></div>
+        <label class="field">Assignee<select class="input" data-f="assignee"${ro}>${userOptions(i.assignee)}</select></label>
+        <label class="field wide">Next step<input class="input" data-f="next" maxlength="200" value="${esc(i.next)}"${ro} placeholder="Who does what next"></label></div>
         <details class="more"${innerWidth > 700 ? " open" : ""}><summary>More details</summary><div class="more-fields">
         <label class="field">Priority<select class="input" data-f="priority"${ro}>${priorityOptions(i.priority)}</select></label>
         <label class="field">Type<select class="input" data-f="type"${ro}>${typeOptions(i.type)}</select></label>

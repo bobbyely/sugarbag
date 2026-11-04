@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS statuses (project_id INTEGER NOT NULL REFERENCES proj
 CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects ON DELETE CASCADE, num INTEGER NOT NULL,
   type TEXT NOT NULL, parent_id INTEGER REFERENCES items ON DELETE CASCADE, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'medium', assignee_id INTEGER REFERENCES users ON DELETE SET NULL,
-  labels TEXT NOT NULL DEFAULT '[]', position REAL NOT NULL, start_date TEXT, due_date TEXT, ref TEXT, status_since INTEGER,
+  labels TEXT NOT NULL DEFAULT '[]', position REAL NOT NULL, start_date TEXT, due_date TEXT, ref TEXT, status_since INTEGER, next TEXT NOT NULL DEFAULT '',
   created_by INTEGER REFERENCES users ON DELETE SET NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL,
   UNIQUE (project_id, num), UNIQUE (project_id, ref));
 CREATE INDEX IF NOT EXISTS items_board ON items (project_id, status, position);
@@ -99,6 +99,8 @@ def upgrade(conn):
     has = lambda table, column: any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))  # noqa: E731
     if not has("users", "hidden_columns"):
         conn.execute("ALTER TABLE users ADD COLUMN hidden_columns TEXT NOT NULL DEFAULT '{}'")
+    if not has("items", "next"):
+        conn.execute("ALTER TABLE items ADD COLUMN next TEXT NOT NULL DEFAULT ''")
     if not has("items", "status_since"):
         conn.execute("ALTER TABLE items ADD COLUMN status_since INTEGER")
         conn.execute("""UPDATE items SET status_since = COALESCE(
@@ -226,7 +228,7 @@ def item_json(row):
     return {"key": f"{key}-{row['num']}", "project": key, "type": row["type"], "title": row["title"], "body": row["body"],
             "status": row["status"], "priority": row["priority"], "assignee": row["assignee"], "labels": json.loads(row["labels"]),
             "parent": f"{key}-{row['parent_num']}" if row["parent_num"] else None, "parent_title": row["parent_title"], "parent_type": row["parent_type"],
-            "start": row["start_date"], "due": row["due_date"], "ref": row["ref"], "status_since": row["status_since"], "position": row["position"], "children": row["children"],
+            "start": row["start_date"], "due": row["due_date"], "ref": row["ref"], "next": row["next"], "status_since": row["status_since"], "position": row["position"], "children": row["children"],
             "children_done": row["children_done"], "comment_count": row["comment_count"], "created_by": row["creator"], "created": row["created"], "updated": row["updated"]}
 
 
@@ -571,6 +573,7 @@ def add_item(ctx):
         raise ApiError(400, "bad type or priority")
     labels, start, due = clean_labels(b.get("labels")), clean_date(b.get("start"), "start"), clean_date(b.get("due"), "due")
     ref = text(b, "ref", 200) or None
+    next_step = text(b, "next", 200)
     now = int(time.time())
     with tx(ctx.conn) as c:
         project = find_project(c, text(b, "project", 10, True).upper())
@@ -584,10 +587,10 @@ def add_item(ctx):
         c.execute("UPDATE projects SET next_num = ? WHERE id = ?", (num + 1, project["id"]))
         try:
             item_id = c.execute("""INSERT INTO items (project_id, num, type, parent_id, title, body, status, priority, assignee_id, labels, position,
-                                   start_date, due_date, ref, status_since, created_by, created, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                   start_date, due_date, ref, next, status_since, created_by, created, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (project["id"], num, kind, parent["id"] if parent is not None else None, title, body, status, priority,
                                  find_assignee(c, b.get("assignee")), json.dumps(labels), bottom_of(c, project["id"], status),
-                                 start, due, ref, now, ctx.user["id"], now, now)).lastrowid
+                                 start, due, ref, next_step, now, ctx.user["id"], now, now)).lastrowid
         except sqlite3.IntegrityError:
             raise ApiError(409, f"an item with ref {ref} already exists") from None
     ctx.status = 201
@@ -626,6 +629,8 @@ def edit_item(ctx, key):
             new["start_date"] = clean_date(b["start"], "start")
         if "due" in b:
             new["due_date"] = clean_date(b["due"], "due")
+        if "next" in b:
+            new["next"] = text(b, "next", 200)
         if "assignee" in b:
             new["assignee_id"] = find_assignee(c, b["assignee"])
         if "status" in b and b["status"] != row["status"]:
