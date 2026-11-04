@@ -570,6 +570,7 @@ async function openSettings() {
     const old = state.me.name;
     Object.assign(state.me, await api("PATCH", "/api/me", { name: s.querySelector("#myname").value }));
     if (state.assignee === old) state.assignee = state.me.name;
+    state.users = await api("GET", "/api/users");  // before the redraw, so the assignee menu has the new name
     await load(); drawShell();  // cards name the assignee, so they change too
     await again();
     toast("Name saved.");
