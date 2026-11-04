@@ -112,7 +112,7 @@ function drawShell() {
     (state.me.role === "admin" ? '<option value="+new">+ New project</option>' : "");
   $app.innerHTML = `<div class="top"><span class="brand">${LOGO}<span>${esc(state.name)}</span></span>
       <label class="sr" for="project">Project</label><select class="input" id="project">${options}</select>
-      <div class="tabs"><button data-view="board" aria-pressed="${state.view === "board"}">Board</button><button data-view="list" aria-pressed="${state.view === "list"}">List</button><button data-view="roadmap" aria-pressed="${state.view === "roadmap"}">Roadmap</button></div>
+      <div class="tabs"><button data-view="board" aria-pressed="${state.view === "board"}">Board</button><button data-view="list" aria-pressed="${state.view === "list"}">List</button><button data-view="roadmap" aria-pressed="${state.view === "roadmap"}">Roadmap</button><button data-view="timeline" aria-pressed="${state.view === "timeline"}">Timeline</button></div>
       <span class="spacer"></span>
       ${canEdit() && state.project ? '<button class="btn primary" id="create" aria-label="New ticket">+ New<span class="wide"> ticket</span></button>' : ""}
       <button class="btn icon-btn" id="theme" aria-label="Colour theme: ${THEMES[state.theme] || "Auto"}. Tap to change.">${SUN_ICON}<span>${THEMES[state.theme] || "Auto"}</span></button>
@@ -171,6 +171,7 @@ function drawView() {
     if (first) first.onclick = openNewProject;
   } else if (state.view === "list") drawList(box);
   else if (state.view === "roadmap") drawRoadmap(box);
+  else if (state.view === "timeline") drawTimeline(box);
   else drawBoard(box);
 }
 
@@ -371,6 +372,77 @@ function drawRoadmap(box) {
       box.querySelector(`[data-toggle="${CSS.escape(k)}"]`)?.focus();  // the redraw drops focus, which would lose a keyboard user's place
     };
   });
+}
+
+// --- The timeline: dated work as bars on one shared time axis ---
+
+const DAY_PX = 4;  // fixed scale; shortcut: no zoom, add one if a project spans many years
+const dayNumber = d => Date.parse(d + "T00:00:00Z") / 864e5;
+const dayText = d => new Date(d + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+
+function drawTimeline(box) {
+  box.className = "list";
+  const isDone = i => !!statusInfo(i.status)?.is_done;
+  const dated = i => !!(i.start || i.due);
+  const epics = state.items.filter(i => i.type === "epic");
+  const kids = e => state.items.filter(k => k.parent === e.key && k.type !== "subtask").sort((a, b) => natural(a.key, b.key));
+  const groups = epics.map(e => ({ e, hits: kids(e).filter(matches) })).filter(g => matches(g.e) || g.hits.length);
+  // Work with no epic above it still belongs on the chart.
+  const loose = state.items.filter(i => i.type !== "epic" && i.type !== "subtask" && !epics.some(e => e.key === i.parent) && matches(i));
+  if (loose.length) groups.push({ e: null, hits: loose });
+  const rowsOf = g => (g.e && matches(g.e) ? [g.e] : []).concat(g.hits);
+  const all = groups.flatMap(rowsOf);
+  const undated = all.filter(i => !dated(i));
+  // An epic with no dates of its own stays as a heading when its stories are dated.
+  const earliest = g => [g.e, ...g.hits].filter(i => i && dated(i)).map(i => i.start || i.due).sort()[0] || "9";
+  const shownGroups = groups.filter(g => rowsOf(g).some(dated) || (g.e && g.hits.some(dated))).sort((a, b) => (a.e ? 0 : 1) - (b.e ? 0 : 1) || earliest(a).localeCompare(earliest(b)));
+  const days = all.filter(dated).flatMap(i => [i.start, i.due].filter(Boolean)).map(dayNumber);
+  const noDates = undated.length ? `<details class="tl-undated"${days.length ? "" : " open"}><summary>No dates (${undated.length})</summary>${undated.map(i =>
+    `<button class="row" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span><span class="t">${mdInline(i.title)}</span>${statusChip(i.status)}</button>`).join("")}</details>` : "";
+  if (!days.length) {
+    box.innerHTML = `<p class="empty">${all.length ? "Nothing has a date yet. " : "Nothing here. "}To put work on the timeline, open a ticket and set its start and due dates in the details.</p>${noDates}`;
+    box.querySelectorAll("[data-key]").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
+    return;
+  }
+  // Pad a week before and ~2 months after (room for the date label), then snap to whole months.
+  const first = new Date(Math.min(...days) * 864e5 - 7 * 864e5), last = new Date(Math.max(...days) * 864e5 + 75 * 864e5);
+  const from = Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), 1) / 864e5;
+  const to = Date.UTC(last.getUTCFullYear(), last.getUTCMonth() + 1, 1) / 864e5;
+  const width = (to - from) * DAY_PX;
+  const months = [];
+  for (let d = new Date(from * 864e5); d.getTime() / 864e5 < to; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) {
+    months.push(`<span class="tl-month" data-at="${d.getTime() / 864e5 - from}">${esc(d.toLocaleDateString(undefined, { month: "short", timeZone: "UTC", ...(d.getUTCMonth() === 0 || !months.length ? { year: "numeric" } : {}) }))}</span>`);
+  }
+  const row = (i, head) => {
+    const range = i.start && i.due ? `${dayText(i.start)} to ${dayText(i.due)}` : i.start ? `starts ${dayText(i.start)}` : i.due ? `due ${dayText(i.due)}` : "no dates";
+    const late = i.due && i.due < today() && !isDone(i);
+    const kind = isDone(i) ? "done" : statusInfo(i.status)?.position ? "active" : "wait";
+    const mark = !dated(i) ? "" : i.start && i.due
+      ? `<span class="tl-bar ${kind}${late ? " late" : ""}" data-from="${dayNumber(i.start) - from}" data-len="${Math.max(1, dayNumber(i.due) - dayNumber(i.start) + 1)}"></span>`
+      : `<span class="tl-dot ${kind}${late ? " late" : ""}" data-from="${dayNumber(i.start || i.due) - from}"></span>`;
+    const label = dated(i) ? `<span class="tl-when" data-from="${dayNumber(i.due || i.start) - from + 1}">${esc(range)}</span>` : "";
+    return `<button class="tl-row${head ? " head" : ""}${isDone(i) ? " is-done" : ""}" data-key="${esc(i.key)}" aria-label="${esc(i.key)} ${esc(i.title)}, ${esc(statusInfo(i.status)?.name || i.status)}, ${esc(range)}${late ? ", overdue" : ""}">
+      <span class="tl-name">${typeIcon(i.type)}<span class="t">${esc(i.title)}</span></span><span class="tl-track">${mark}${label}</span></button>`;
+  };
+  const body = shownGroups.map(g => {
+    const title = g.e ? "" : '<div class="tl-loose">No epic</div>';
+    return title + (g.e ? row(g.e, true) : "") + g.hits.filter(dated).map(k => row(k)).join("");
+  }).join("");
+  box.innerHTML = `<div class="tl-scroll"><div class="tl-chart"><div class="tl-row axis" aria-hidden="true"><span class="tl-name"></span><span class="tl-track">${months.join("")}</span></div>${body}</div></div>${noDates}`;
+  const chart = box.querySelector(".tl-chart"), nowAt = dayNumber(today()) - from;
+  chart.querySelectorAll(".tl-track").forEach(t => {
+    t.style.width = width + "px";
+    t.querySelectorAll("[data-at]").forEach(m => { m.style.left = m.dataset.at * DAY_PX + "px"; });
+    t.querySelectorAll("[data-from]").forEach(b => { b.style.left = b.dataset.from * DAY_PX + "px"; if (b.dataset.len) b.style.width = b.dataset.len * DAY_PX + "px"; });
+    if (nowAt >= 0 && nowAt <= to - from) {
+      const line = document.createElement("span");
+      line.className = "tl-today"; line.style.left = nowAt * DAY_PX + "px";
+      t.append(line);
+    }
+  });
+  // Open at today, so a phone doesn't start months in the past.
+  box.querySelector(".tl-scroll").scrollLeft = Math.max(0, nowAt * DAY_PX - 40);
+  box.querySelectorAll("[data-key]").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
 }
 
 // --- Create ---
