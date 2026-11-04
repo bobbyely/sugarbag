@@ -343,19 +343,34 @@ function drawRoadmap(box) {
   box.className = "list";
   // No ticket needs a date, so undated epics sort after dated ones, by title with numbers in order ("Stage 2" before "Stage 10").
   const isDone = i => !!statusInfo(i.status)?.is_done;
-  const epics = state.items.filter(i => i.type === "epic" && matches(i)).sort((a, b) =>
-    isDone(a) - isDone(b) || (a.start ? 0 : 1) - (b.start ? 0 : 1) || (a.start || "").localeCompare(b.start || "") || natural(a.title, b.title));
-  box.innerHTML = epics.map(e => {
-    const open = openEpics.has(e.key), stories = state.items.filter(k => k.parent === e.key).sort((a, b) => natural(a.key, b.key));
+  const filtering = !!(state.q.trim() || state.assignee);
+  // An epic shows if it or any of its stories match, so a search for a story's title finds its epic.
+  const rows = state.items.filter(i => i.type === "epic").map(e => {
+    const stories = state.items.filter(k => k.parent === e.key).sort((a, b) => natural(a.key, b.key));
+    return { e, stories, hits: stories.filter(matches) };
+  }).filter(r => matches(r.e) || r.hits.length).sort((x, y) => {
+    const a = x.e, b = y.e;
+    return isDone(a) - isDone(b) || (a.start ? 0 : 1) - (b.start ? 0 : 1) || (a.start || "").localeCompare(b.start || "") || natural(a.title, b.title);
+  });
+  box.innerHTML = rows.map(({ e, stories, hits }) => {
+    // While filtering, epics with matches start open; a tap on the arrow flips that.
+    const open = openEpics.has(e.key) !== (filtering && hits.length > 0), shown = filtering ? hits : stories;
     return `<div class="road${isDone(e) ? " is-done" : ""}"><div class="road-head">
       <button class="road-toggle" data-toggle="${esc(e.key)}" aria-expanded="${open}" aria-label="${open ? "Hide" : "Show"} stories of ${esc(e.title)}"${stories.length ? "" : " disabled"}>${open ? "&#9662;" : "&#9656;"}</button>
       <button class="road-main" data-key="${esc(e.key)}"><span class="road-top">${typeIcon("epic")}<span class="t">${mdInline(e.title)}</span>${statusChip(e.status)}</span>
         <span class="road-bar"><progress value="${e.children_done}" max="${e.children || 1}" aria-label="Done"></progress><span class="progress">${e.children_done}/${e.children}</span></span>
         ${e.next ? `<span class="next">&rarr; ${esc(e.next)}</span>` : ""}</button></div>
-      ${open ? stories.map(k => `<button class="row child" data-key="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${mdInline(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("") : ""}</div>`;
+      ${open ? shown.map(k => `<button class="row child" data-key="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${mdInline(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("") : ""}</div>`;
   }).join("") || '<p class="empty">No epics yet.</p>';
   box.querySelectorAll("[data-key]").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
-  box.querySelectorAll("[data-toggle]").forEach(b => { b.onclick = () => { const k = b.dataset.toggle; openEpics.has(k) ? openEpics.delete(k) : openEpics.add(k); drawRoadmap(box); }; });
+  box.querySelectorAll("[data-toggle]").forEach(b => {
+    b.onclick = () => {
+      const k = b.dataset.toggle;
+      openEpics.has(k) ? openEpics.delete(k) : openEpics.add(k);
+      drawRoadmap(box);
+      box.querySelector(`[data-toggle="${CSS.escape(k)}"]`)?.focus();  // the redraw drops focus, which would lose a keyboard user's place
+    };
+  });
 }
 
 // --- Create ---
