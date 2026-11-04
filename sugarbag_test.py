@@ -291,6 +291,13 @@ assert sb("edit", key, "--title", "Renamed", "--assignee", "ann")[0] == 0 and "R
 assert key in sb("list", "--mine")[1]
 assert sb("edit", key, "--next", "Ann writes the test")[0] == 0 and "Next: Ann writes the test" in sb("show", key)[1]
 assert "-> Ann writes the test" in sb("list", "--who", "ann")[1] and key not in sb("list", "--who", "mem")[1]
+assert sb("watch", key, "--every", "0.1", "--timeout", "0.3")[0] == 3  # nothing new
+watcher = subprocess.Popen([sys.executable, "-B", os.path.join(os.path.dirname(os.path.abspath(__file__)), "sb.py"), "watch", key, "--every", "0.2", "--timeout", "20"], stdout=subprocess.PIPE, text=True, env=env)
+import time  # noqa: E402
+time.sleep(1)  # let it read the ticket first
+ok(call("POST", f"/api/items/{key}/comments", {"body": "To worker: fix the title"}, cookie=ann), 201)
+out, _ = watcher.communicate(timeout=25)
+assert watcher.returncode == 0 and "To worker: fix the title" in out, out
 epic_key = ok(call("POST", "/api/items", {"project": "AB", "type": "epic", "title": "An epic for finding"}, cookie=ann), 201)["key"]
 assert epic_key not in sb("list")[1] and epic_key in sb("list", "--all", "--q", "An epic for")[1]  # so an agent can find it before making a duplicate
 ok(call("DELETE", f"/api/items/{epic_key}", cookie=ann))

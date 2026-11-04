@@ -63,7 +63,7 @@ curl -H "Authorization: Bearer $SUGARBAG_TOKEN" -H "Content-Type: application/js
 
 ## From the command line
 
-`sb.py` wraps the API for agents and scripts (`--next "..."` sets the next step; `list --who NAME` shows one person's tickets): `sb.py list`, `show`, `new`, `move`, `comment`, `edit`, `columns`. See the top of the file for its settings.
+`sb.py` wraps the API for agents and scripts (`--next "..."` sets the next step; `list --who NAME` shows one person's tickets): `sb.py list`, `show`, `new`, `move`, `comment`, `edit`, `columns`, `watch`. `watch` waits for a new comment or a move, so agents can talk through a ticket. See the top of the file for its settings.
 
 ## Security
 

@@ -12,6 +12,8 @@ Settings come from the environment, or from ~/.config/sugarbag/env as KEY=value 
   sb.py move AB-12 in_progress        move to a column, by its short name; sb.py columns lists them
   sb.py comment AB-12 "What I did"    add a comment. Use - to read it from standard input
   sb.py edit AB-12 --title "New"      change a field. Also --body-file --priority --assignee --next --label --parent --due --start
+  sb.py watch AB-12 AB-13             wait until any of these gets a new comment or changes column, print it, and end.
+                                      Run it in the background. Ends with code 3 after --timeout seconds (default 1500)
 
 Standard library only. Prints no secrets. Checked by sugarbag_test.py.
 """
@@ -19,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -148,6 +151,27 @@ def do_edit(conf, args):
     print(f"{call(conf, 'PATCH', '/api/items/' + args.key, change)['key']} changed")
 
 
+def do_watch(conf, args):
+    # shortcut: a comment made just before this starts isn't counted as new, so read the ticket again after starting if it matters.
+    seen = {k: call(conf, "GET", "/api/items/" + k) for k in args.keys}
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        time.sleep(args.every)
+        changed = False
+        for key, old in seen.items():
+            now = call(conf, "GET", "/api/items/" + key)
+            for c in now["comments"][len(old["comments"]):]:
+                print(f"{key} {c['user']}: {c['body']}")
+                changed = True
+            if now["status"] != old["status"]:
+                print(f"{key} moved to {now['status']}")
+                changed = True
+        if changed:
+            return
+    print("Nothing new yet.")
+    sys.exit(3)
+
+
 def do_columns(conf, args):
     for c in columns_of(conf, project_of(conf, args)):
         print(f"{c['slug']:<16}{c['name']}" + ("  (finished)" if c["is_done"] else ""))
@@ -171,6 +195,11 @@ def main():
     move.add_argument("key")
     move.add_argument("status")
     move.set_defaults(fn=do_move)
+    watch = sub.add_parser("watch")
+    watch.add_argument("keys", nargs="+")
+    watch.add_argument("--every", type=float, default=30)
+    watch.add_argument("--timeout", type=float, default=1500)
+    watch.set_defaults(fn=do_watch)
     comment = sub.add_parser("comment")
     comment.add_argument("key")
     comment.add_argument("text")
