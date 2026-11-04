@@ -7,6 +7,7 @@ Reads and writes only a temporary folder. Takes a few seconds, because passwords
 """
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import urllib.error
@@ -159,6 +160,52 @@ assert CO({"columns": made["statuses"] + [{"name": "Testing  QA"}]})[0] == 200  
 assert call("POST", "/api/items", {"project": "CO", "title": "x", "status": "review"}, cookie=mem)[0] == 400  # gone
 renamed = [dict(s, name="Finished") if s["slug"] == "done" else s for s in ok(call("GET", "/api/projects", cookie=ann))[0]["statuses"]]
 assert next(s for s in ok(call("PUT", "/api/projects/CO/columns", {"columns": renamed}, cookie=ann))["statuses"] if s["slug"] == "done")["name"] == "Finished"
+
+# Days in a column: set when made, changed only by moving to another column.
+aged = ok(call("POST", "/api/items", {"project": "AB", "title": "aged", "status": "review"}, cookie=mem), 201)
+assert aged["status_since"] and abs(aged["status_since"] - aged["created"]) < 5
+conn = sugarbag.connect()
+conn.execute("UPDATE items SET status_since = 1000 WHERE num = ?", (int(aged["key"].split("-")[1]),))
+assert ok(call("POST", f"/api/items/{aged['key']}/move", {"status": "review"}, cookie=mem))["status_since"] == 1000  # same column
+assert ok(call("PATCH", f"/api/items/{aged['key']}", {"title": "older"}, cookie=mem))["status_since"] == 1000
+assert ok(call("POST", f"/api/items/{aged['key']}/move", {"status": "done"}, cookie=mem))["status_since"] > 1000
+conn.execute("UPDATE items SET status_since = 1000 WHERE num = ?", (int(aged["key"].split("-")[1]),))
+assert ok(call("PATCH", f"/api/items/{aged['key']}", {"status": "review"}, cookie=mem))["status_since"] > 1000
+conn.close()
+ok(call("DELETE", f"/api/items/{aged['key']}", cookie=mem))
+
+# An older database gets the new columns, with sensible dates.
+old_path = os.path.join(tmp.name, "old.db")
+old_schema = sugarbag.SCHEMA.replace(", hidden_columns TEXT NOT NULL DEFAULT '{}'", "").replace(" status_since INTEGER,", "")
+old = sqlite3.connect(old_path)
+old.executescript(old_schema)
+old.execute("INSERT INTO projects (key, name) VALUES ('OL', 'Old')")
+old.execute("INSERT INTO items (project_id, num, type, title, status, position, created, updated) VALUES (1, 1, 'task', 'a', 'ideas', 1, 500, 500)")
+old.execute("INSERT INTO items (project_id, num, type, title, status, position, created, updated) VALUES (1, 2, 'task', 'b', 'ideas', 2, 500, 500)")
+old.execute("INSERT INTO activity (item_id, field, old, new, at) VALUES (2, 'status', 'x', 'ideas', 700)")
+old.commit()
+old.close()
+saved = os.environ["SUGARBAG_DB"]
+os.environ["SUGARBAG_DB"] = old_path
+sugarbag.init_db()
+sugarbag.init_db()  # and again, harmlessly
+check = sugarbag.connect()
+assert [r["status_since"] for r in check.execute("SELECT status_since FROM items ORDER BY id")] == [500, 700]
+check.close()
+os.environ["SUGARBAG_DB"] = saved
+
+# Your own name, and your own view of the columns.
+assert ok(call("GET", "/api/me", cookie=view))["hidden"] == {}
+assert ok(call("PUT", "/api/me/hidden/AB", {"columns": ["done", "ghost"]}, cookie=view)) == ["done"]  # a viewer may tidy their own view
+assert ok(call("GET", "/api/me", cookie=view))["hidden"] == {"AB": ["done"]}
+assert ok(call("GET", "/api/me", cookie=mem))["hidden"] == {}  # nobody else's board changes
+assert call("PUT", "/api/me/hidden/AB", {"columns": "done"}, cookie=view)[0] == 400
+assert call("PUT", "/api/me/hidden/NOPE", {"columns": []}, cookie=view)[0] == 404
+assert call("PATCH", "/api/me", {"name": "ann"}, cookie=view)[0] == 409
+assert call("PATCH", "/api/me", {"name": "bad name!"}, cookie=view)[0] == 400
+assert ok(call("PATCH", "/api/me", {"name": "viewer2"}, cookie=view))["name"] == "viewer2"
+assert ok(call("GET", "/api/me", cookie=view))["name"] == "viewer2"  # still signed in
+ok(call("PATCH", "/api/me", {"name": "view"}, cookie=view))
 
 # Search and filters.
 assert [i["key"] for i in ok(call("GET", "/api/items?project=AB&q=Board", cookie=mem))] == ["AB-2"]

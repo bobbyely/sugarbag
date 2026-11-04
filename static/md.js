@@ -1,15 +1,25 @@
 // A small Markdown reader for issue text. Runs in the browser; reads a string, returns HTML. No settings.
 // Text is escaped first, so whatever someone writes in an issue stays text.
-// shortcut: headings, lists, tables, code, bold and links only, add more when an issue needs them.
+// shortcut: headings, lists, tick boxes, tables, code, bold, strikethrough and links only, add more when an issue needs them.
 (function (root) {
   const esc = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   // Only web links, so an issue can't smuggle in javascript:.
   const inline = s => esc(s)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/~~([^~]+)~~/g, "<s>$1</s>")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  root.mdInline = inline;  // for one-line titles
   const cells = l => l.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
   const listItem = /^\s*(-|\d+\.) /, block = /^(#{1,4} |```|\s*\||\s*(-|\d+\.) )/;
+
+  // Tick boxes show what's done. They aren't controls, so they're drawn as marks rather than inputs.
+  const listLine = s => {
+    const box = /^\[( |x)\] (.*)/i.exec(s);
+    if (!box) return `<li>${inline(s)}</li>`;
+    const done = box[1] !== " ";
+    return `<li class="tick${done ? " ticked" : ""}"><span aria-label="${done ? "Done" : "Not done"}">${done ? "☑" : "☐"}</span>${inline(box[2])}</li>`;
+  };
 
   root.mdToHtml = function (text) {
     const lines = text.split("\n"), out = [];
@@ -30,7 +40,7 @@
         out.push(`<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`);
       } else if (listItem.test(l)) {
         const tag = /^\s*-/.test(l) ? "ul" : "ol", items = [];
-        for (; listItem.test(lines[i] || ""); i++) items.push(`<li>${inline(lines[i].replace(listItem, ""))}</li>`);
+        for (; listItem.test(lines[i] || ""); i++) items.push(listLine(lines[i].replace(listItem, "")));
         out.push(`<${tag}>${items.join("")}</${tag}>`);
       } else if (!l.trim()) {
         i++;
