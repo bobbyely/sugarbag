@@ -112,9 +112,9 @@ function drawShell() {
       <label class="sr" for="project">Project</label><select class="input" id="project">${options}</select>
       <div class="tabs"><button data-view="board" aria-pressed="${state.view === "board"}">Board</button><button data-view="list" aria-pressed="${state.view === "list"}">List</button></div>
       <span class="spacer"></span>
-      ${canEdit() && state.project ? '<button class="btn primary" id="create">+ New ticket</button>' : ""}
+      ${canEdit() && state.project ? '<button class="btn primary" id="create" aria-label="New ticket">+ New<span class="wide"> ticket</span></button>' : ""}
       <button class="btn icon-btn" id="theme" aria-label="Colour theme: ${THEMES[state.theme] || "Auto"}. Tap to change.">${SUN_ICON}<span>${THEMES[state.theme] || "Auto"}</span></button>
-      <button class="btn icon-btn" id="settings">${GEAR_ICON}<span>Settings</span></button></div>
+      <button class="btn icon-btn" id="settings" aria-label="Settings">${GEAR_ICON}<span>Settings</span></button></div>
     <div class="filters"><label class="sr" for="q">Search</label><input class="input" id="q" type="search" placeholder="Search" value="${esc(state.q)}">
       <label class="sr" for="who">Assignee</label><select class="input" id="who"></select>
       <label class="sr" for="epic">Epic</label><select class="input" id="epic"></select></div>
@@ -362,7 +362,7 @@ function openNewProject() {
     try {
       const made = await api("POST", "/api/projects", { key: f.key.value, name: f.name.value });
       closeShade(s);
-      state.project = made.key; remember();
+      state.project = made.key; state.epic = ""; remember();
       state.projects = await api("GET", "/api/projects"); await load(); drawShell();
     } catch (err) { const p = f.querySelector(".err"); p.textContent = err.message; p.hidden = false; }
   };
