@@ -573,7 +573,7 @@ def add_item(ctx):
         raise ApiError(400, "bad type or priority")
     labels, start, due = clean_labels(b.get("labels")), clean_date(b.get("start"), "start"), clean_date(b.get("due"), "due")
     ref = text(b, "ref", 200) or None
-    next_step = text(b, "next", 200)
+    next_step = re.sub(r"\s*[\r\n]+\s*", " ", text(b, "next", 200))  # one-line field
     now = int(time.time())
     with tx(ctx.conn) as c:
         project = find_project(c, text(b, "project", 10, True).upper())
@@ -630,7 +630,7 @@ def edit_item(ctx, key):
         if "due" in b:
             new["due_date"] = clean_date(b["due"], "due")
         if "next" in b:
-            new["next"] = text(b, "next", 200)
+            new["next"] = re.sub(r"\s*[\r\n]+\s*", " ", text(b, "next", 200))
         if "assignee" in b:
             new["assignee_id"] = find_assignee(c, b["assignee"])
         if "status" in b and b["status"] != row["status"]:

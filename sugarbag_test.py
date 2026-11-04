@@ -5,6 +5,7 @@
 
 Reads and writes only a temporary folder. Takes a few seconds, because passwords are slow to hash on purpose.
 """
+import argparse
 import json
 import os
 import sqlite3
@@ -106,6 +107,8 @@ edited = ok(call("PATCH", "/api/items/AB-2", {"title": "Board", "priority": "hig
 assert edited["priority"] == "high" and edited["due"] == "2026-12-01"
 assert story["next"] == "" and ok(call("PATCH", "/api/items/AB-2", {"next": "  Ann checks the <b>draft</b> "}, cookie=mem))["next"] == "Ann checks the <b>draft</b>"
 assert call("PATCH", "/api/items/AB-2", {"next": "x" * 201}, cookie=mem)[0] == 400
+assert ok(call("PATCH", "/api/items/AB-2", {"next": "Ann tests\r\n\n  then Bo"}, cookie=mem))["next"] == "Ann tests then Bo"
+assert ok(call("POST", "/api/items", {"project": "AB", "title": "m", "next": "a\nb"}, cookie=mem), 201)["next"] == "a b"
 assert ok(call("POST", "/api/items", {"project": "AB", "title": "n", "next": "Bo reviews"}, cookie=mem), 201)["next"] == "Bo reviews"
 assert any(a["field"] == "next" for a in ok(call("GET", "/api/items/AB-2", cookie=mem))["activity"])
 ok(call("PATCH", f"/api/items/{sub['key']}", {"status": "done"}, cookie=mem))
@@ -275,6 +278,12 @@ def sb(*args, stdin=""):
 code, key, _ = sb("new", "From the command line", "--type", "bug", "--status", "selected", "--label", "cli", "--body-file", "-", stdin="Long text")
 assert code == 0 and key.startswith("AB-")
 key = key.strip()
+# Between a merge and a rebuild the server has no next field; sb.py must still work.
+import sb as sb_module  # noqa: E402
+fake = {"key": "AB-9", "title": "t", "type": "task", "status": "ideas", "priority": "medium", "assignee": None, "parent": None, "body": "", "subitems": [], "comments": [], "children": 0}
+sb_module.call = lambda *a, **k: fake
+sb_module.do_show({}, argparse.Namespace(key="AB-9"))
+assert "next" not in fake
 assert "selected" in sb("columns")[1] and key in sb("list")[1] and "@" not in sb("list", "--q", "From the command")[1]
 assert sb("move", key, "in_progress")[0] == 0 and "in_progress" in sb("show", key)[1]
 assert sb("comment", key, "-", stdin="Did the thing")[0] == 0 and "Did the thing" in sb("show", key)[1]
