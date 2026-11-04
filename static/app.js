@@ -377,6 +377,7 @@ function drawRoadmap(box) {
 // --- The timeline: dated work as bars on one shared time axis ---
 
 const DAY_PX = 4;  // fixed scale; shortcut: no zoom, add one if a project spans many years
+const WINDOW_DAYS = 1826;  // 5 years each side of today; a mistyped year would otherwise draw thousands of month labels. shortcut: fixed window, make it a setting if a project needs longer
 const dayNumber = d => Date.parse(d + "T00:00:00Z") / 864e5;
 const dayText = d => new Date(d + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 
@@ -394,13 +395,19 @@ function drawTimeline(box) {
   const all = groups.flatMap(rowsOf);
   const undated = all.filter(i => !dated(i));
   // An epic with no dates of its own stays as a heading when its stories are dated.
+  const nowDay = dayNumber(today());
+  const inWindow = i => [i.start, i.due].filter(Boolean).every(d => Math.abs(dayNumber(d) - nowDay) <= WINDOW_DAYS);
   const earliest = g => [g.e, ...g.hits].filter(i => i && dated(i)).map(i => i.start || i.due).sort()[0] || "9";
-  const shownGroups = groups.filter(g => rowsOf(g).some(dated) || (g.e && g.hits.some(dated))).sort((a, b) => (a.e ? 0 : 1) - (b.e ? 0 : 1) || earliest(a).localeCompare(earliest(b)));
-  const days = all.filter(dated).flatMap(i => [i.start, i.due].filter(Boolean)).map(dayNumber);
-  const noDates = undated.length ? `<details class="tl-undated"${days.length ? "" : " open"}><summary>No dates (${undated.length})</summary>${undated.map(i =>
-    `<button class="row" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span><span class="t">${mdInline(i.title)}</span>${statusChip(i.status)}</button>`).join("")}</details>` : "";
+  const shownGroups = groups.filter(g => rowsOf(g).some(i => dated(i) && inWindow(i)) || g.hits.some(i => dated(i) && inWindow(i))).sort((a, b) => (a.e ? 0 : 1) - (b.e ? 0 : 1) || earliest(a).localeCompare(earliest(b)));
+  const outside = all.filter(i => dated(i) && !inWindow(i));
+  // The axis fits what is drawn: dated rows inside the window, plus an epic heading whose own dates are inside it.
+  const drawn = shownGroups.flatMap(g => [g.e, ...g.hits.filter(dated)].filter(i => i && dated(i) && inWindow(i)));
+  const days = drawn.flatMap(i => [i.start, i.due].filter(Boolean)).map(dayNumber);
+  const listRow = (i, note) => `<button class="row" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span><span class="t">${mdInline(i.title)}</span>${note ? `<span class="tl-note">${esc(note)}</span>` : ""}${statusChip(i.status)}</button>`;
+  const noDates = (undated.length ? `<details class="tl-undated"${days.length ? "" : " open"}><summary>No dates (${undated.length})</summary>${undated.map(i => listRow(i)).join("")}</details>` : "") +
+    (outside.length ? `<details class="tl-undated" open><summary>Too far from today to draw (${outside.length})</summary>${outside.map(i => listRow(i, [i.start, i.due].filter(Boolean).map(dayText).join(" to "))).join("")}</details>` : "");
   if (!days.length) {
-    box.innerHTML = `<p class="empty">${all.length ? "Nothing has a date yet. " : "Nothing here. "}To put work on the timeline, open a ticket and set its start and due dates in the details.</p>${noDates}`;
+    box.innerHTML = `<p class="empty">${all.length ? "Nothing can be drawn yet. " : "Nothing here. "}To put work on the timeline, open a ticket and set its start and due dates in the details.</p>${noDates}`;
     box.querySelectorAll("[data-key]").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
     return;
   }
@@ -414,13 +421,16 @@ function drawTimeline(box) {
     months.push(`<span class="tl-month" data-at="${d.getTime() / 864e5 - from}">${esc(d.toLocaleDateString(undefined, { month: "short", timeZone: "UTC", ...(d.getUTCMonth() === 0 || !months.length ? { year: "numeric" } : {}) }))}</span>`);
   }
   const row = (i, head) => {
-    const range = i.start && i.due ? `${dayText(i.start)} to ${dayText(i.due)}` : i.start ? `starts ${dayText(i.start)}` : i.due ? `due ${dayText(i.due)}` : "no dates";
+    // The server allows a start after the due date, so draw from the earlier day and say so.
+    const flip = i.start && i.due && i.start > i.due, [a, z] = flip ? [i.due, i.start] : [i.start, i.due];
+    const range = a && z ? `${dayText(a)} to ${dayText(z)}${flip ? " (dates reversed)" : ""}` : i.start ? `starts ${dayText(i.start)}` : i.due ? `due ${dayText(i.due)}` : "no dates";
+    const here = dated(i) && inWindow(i), statusName = statusInfo(i.status)?.name || i.status;
     const late = i.due && i.due < today() && !isDone(i);
     const kind = isDone(i) ? "done" : statusInfo(i.status)?.position ? "active" : "wait";
-    const mark = !dated(i) ? "" : i.start && i.due
-      ? `<span class="tl-bar ${kind}${late ? " late" : ""}" data-from="${dayNumber(i.start) - from}" data-len="${Math.max(1, dayNumber(i.due) - dayNumber(i.start) + 1)}"></span>`
+    const mark = !here ? "" : a && z
+      ? `<span class="tl-bar ${kind}${late ? " late" : ""}" data-from="${dayNumber(a) - from}" data-len="${dayNumber(z) - dayNumber(a) + 1}"></span>`
       : `<span class="tl-dot ${kind}${late ? " late" : ""}" data-from="${dayNumber(i.start || i.due) - from}"></span>`;
-    const label = dated(i) ? `<span class="tl-when" data-from="${dayNumber(i.due || i.start) - from + 1}">${esc(range)}</span>` : "";
+    const label = here ? `<span class="tl-when" data-from="${dayNumber(z || a) - from + 1}">${esc(statusName)}, ${esc(range)}</span>` : "";
     return `<button class="tl-row${head ? " head" : ""}${isDone(i) ? " is-done" : ""}" data-key="${esc(i.key)}" aria-label="${esc(i.key)} ${esc(i.title)}, ${esc(statusInfo(i.status)?.name || i.status)}, ${esc(range)}${late ? ", overdue" : ""}">
       <span class="tl-name">${typeIcon(i.type)}<span class="t">${esc(i.title)}</span></span><span class="tl-track">${mark}${label}</span></button>`;
   };

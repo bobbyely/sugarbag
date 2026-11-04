@@ -251,3 +251,6 @@ li.tick > span { color: var(--done); }
 .tl-undated summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .tl-undated .row { color: var(--ink); }
 @media (max-width: 600px) { .tl-name { width: 128px; font-size: 13px; } .tl-name .t { white-space: normal; overflow-wrap: anywhere; } }
+.tl-note { color: var(--quiet); font-size: 12px; }
+/* Narrow phones: four tabs, the logo and two buttons cannot share a line, so the tabs get their own. */
+@media (max-width: 420px) { .top { flex-wrap: wrap; } .tabs { order: 9; flex: 1 0 100%; } .tabs button { flex: 1; } }
