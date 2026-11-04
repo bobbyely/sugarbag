@@ -253,6 +253,36 @@ assert call("GET", "/api/me", cookie=mem)[0] == 401 and call("GET", "/api/me", t
 dump = json.dumps(ok(call("GET", "/api/export", cookie=ann)))
 assert "password" not in dump and "sugarbag_" not in dump
 
+# The command line, as an agent uses it. A real run, with no settings file.
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+agent = ok(call("POST", "/api/tokens", {"label": "cli"}, cookie=ann))["token"]
+env = dict(os.environ, SUGARBAG_URL=BASE, SUGARBAG_TOKEN=agent, SUGARBAG_PROJECT="AB", SUGARBAG_ENV=os.path.join(tmp.name, "none"))
+
+
+def sb(*args, stdin=""):
+    r = subprocess.run([sys.executable, "-B", os.path.join(os.path.dirname(os.path.abspath(__file__)), "sb.py"), *args], capture_output=True, text=True, env=env, input=stdin, timeout=30)
+    assert agent not in r.stdout + r.stderr  # a token must never be printed
+    return r.returncode, r.stdout, r.stderr
+
+
+code, key, _ = sb("new", "From the command line", "--type", "bug", "--status", "selected", "--label", "cli", "--body-file", "-", stdin="Long text")
+assert code == 0 and key.startswith("AB-")
+key = key.strip()
+assert "selected" in sb("columns")[1] and key in sb("list")[1] and "@" not in sb("list", "--q", "From the command")[1]
+assert sb("move", key, "in_progress")[0] == 0 and "in_progress" in sb("show", key)[1]
+assert sb("comment", key, "-", stdin="Did the thing")[0] == 0 and "Did the thing" in sb("show", key)[1]
+assert sb("edit", key, "--title", "Renamed", "--assignee", "ann")[0] == 0 and "Renamed" in sb("show", key)[1]
+assert key in sb("list", "--mine")[1]
+epic_key = ok(call("POST", "/api/items", {"project": "AB", "type": "epic", "title": "An epic for finding"}, cookie=ann), 201)["key"]
+assert epic_key not in sb("list")[1] and epic_key in sb("list", "--all", "--q", "An epic for")[1]  # so an agent can find it before making a duplicate
+ok(call("DELETE", f"/api/items/{epic_key}", cookie=ann))
+assert sb("move", key, "nope")[0] != 0 and "Sugarbag said no" in sb("move", key, "nope")[2]
+assert sb("show", "AB-99999")[0] != 0
+env["SUGARBAG_TOKEN"] = ""
+assert "No token" in sb("list")[2]
+
 # Too many wrong passwords.
 for _ in range(10):
     call("POST", "/api/login", {"name": "ann", "password": "wrong"})

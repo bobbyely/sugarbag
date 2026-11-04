@@ -100,6 +100,7 @@ label.field .input { margin-top: 4px; font-weight: 400; font-size: 14px; color: 
 .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .lozenge { font-size: 12px; font-weight: 500; line-height: 18px; padding: 0 6px; border-radius: 3px; background: var(--lozenge); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lozenge.epic { color: var(--epic); background: color-mix(in srgb, var(--epic) 16%, var(--card)); }
+.lozenge.parent { background: none; border: 1px solid var(--line); color: var(--quiet); }
 .lozenge.overdue { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, var(--card)); }
 .meta { display: flex; align-items: center; gap: 6px; color: var(--quiet); font-size: 12.5px; font-weight: 500; }
 .meta > span, .age { white-space: nowrap; }

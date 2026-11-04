@@ -16,7 +16,7 @@ Or with Docker: see `compose.example.yml`.
 ## What's in it
 
 - **Board:** starts with Ideas (the backlog), Selected for development, In progress, Blocked, Review and Done. Each project can have its own columns. Drag with a mouse. On a phone, rest a finger on a card first, so a swipe still scrolls.
-- **Levels:** Epic > Story, Task or Bug > Sub-task. Stories and tasks sit level, so nobody has to decide which contains which.
+- **Levels:** Epic > Story, Task or Bug > Sub-task. Stories and tasks sit level, so nobody has to decide which contains which. A sub-task gets its own card while it's in a working column, past the first two and not finished, with its parent's name on it.
 - **Issues:** keys such as `ABO-12`, priority, assignee, labels, start and due dates, Markdown description, comments, history. An issue opens in the middle of the screen (`/#ABO-12`) or as its own page (`/?issue=ABO-12`).
 - **List:** everything, nested, including epics and sub-tasks.
 - **Your view:** hide or show columns for yourself. Light, dark, or following the device. Change your own name.
@@ -60,6 +60,10 @@ curl -H "Authorization: Bearer $SUGARBAG_TOKEN" -H "Content-Type: application/js
   -d '{"project":"ABO","type":"task","title":"Check the backups","status":"selected"}' \
   http://127.0.0.1:8094/api/items
 ```
+
+## From the command line
+
+`sb.py` wraps the API for agents and scripts: `sb.py list`, `show`, `new`, `move`, `comment`, `edit`, `columns`. See the top of the file for its settings.
 
 ## Security
 
