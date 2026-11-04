@@ -350,6 +350,7 @@ function openCreate(preset = {}) {
 // --- One item ---
 
 async function refresh() {
+  state.projects = await api("GET", "/api/projects");  // someone else may have changed the columns
   await load();
   drawFilters();
   if (!activeDrag) drawView();
@@ -541,7 +542,14 @@ async function openColumns(key) {
       row.querySelector("[data-done]").onchange = e => { cols[n].is_done = e.target.checked; };
       row.querySelector("[data-up]").onclick = () => { [cols[n - 1], cols[n]] = [cols[n], cols[n - 1]]; draw(); };
       row.querySelector("[data-down]").onclick = () => { [cols[n + 1], cols[n]] = [cols[n], cols[n + 1]]; draw(); };
-      row.querySelector("[data-remove]").onclick = () => { const [gone] = cols.splice(n, 1); if (gone.slug && count(gone.slug)) removed.push(gone); draw(); };
+      row.querySelector("[data-remove]").onclick = () => {
+        const full = cols[n].slug && count(cols[n].slug);
+        // Cards can only move to a saved column, so a new one has to be saved before the last old one goes.
+        if (full && !cols.some((c, k) => k !== n && c.slug)) return toast("Save the new column first, then remove this one.");
+        const [gone] = cols.splice(n, 1);
+        if (full) removed.push(gone);
+        draw();
+      };
     });
     // Only columns that already exist can take cards: a new one has no slug until it's saved.
     const targets = cols.filter(c => c.slug);

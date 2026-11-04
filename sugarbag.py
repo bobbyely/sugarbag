@@ -463,8 +463,10 @@ def set_columns(ctx, key):
             if name.lower() in names:
                 raise ApiError(400, f"two columns are called {name}")
             names.add(name.lower())
-            if slug is not None and slug not in old:
+            if slug is not None and (not isinstance(slug, str) or slug not in old):
                 raise ApiError(400, f"no column {slug} in this project")
+            if slug is not None and slug in [r[0] for r in rows]:
+                raise ApiError(400, f"column {slug} is listed twice")
             rows.append([slug, name, 1 if col.get("is_done") else 0])
         kept = {r[0] for r in rows if r[0]}
         for r in rows:  # a new column's slug comes from its name, kept unique, and never changes after that

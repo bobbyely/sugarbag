@@ -145,6 +145,8 @@ no_review = [c for c in keep if c["slug"] != "review"]
 assert CO({"columns": []})[0] == 400 and CO({"columns": [{"name": " "}]})[0] == 400
 assert CO({"columns": [{"name": "Same"}, {"name": "same"}]})[0] == 400
 assert CO({"columns": [{"slug": "ghost", "name": "G"}]})[0] == 400
+assert CO({"columns": [{"slug": [], "name": "G"}]})[0] == 400
+assert CO({"columns": [{"slug": "ideas", "name": "G"}, {"slug": "ideas", "name": "H"}]})[0] == 400
 assert CO({"columns": no_review})[0] == 400  # review still has a card, with nowhere to go
 assert CO({"columns": no_review, "move": {"review": "review"}})[0] == 400
 made = ok(CO({"columns": [{"name": "Testing & QA"}] + list(reversed(no_review)), "move": {"review": "testing_qa"}}))
