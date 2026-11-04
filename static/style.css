@@ -164,26 +164,31 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; color:
 .panel-top { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; align-items: center; margin: -16px -22px 10px; padding: 10px 22px; background: var(--bg); border-bottom: 1px solid var(--line); border-radius: 8px 8px 0 0; color: var(--quiet); font-weight: 600; font-size: 12px; }
 .panel-top .right { margin-left: auto; display: flex; gap: 4px; }
 .title-edit { display: block; width: calc(100% + 14px); font-size: 21px; font-weight: 600; line-height: 1.3; border: 2px solid transparent; border-radius: 4px; background: none; padding: 3px 5px; margin: 0 -7px 10px; resize: none; overflow: hidden; }
-@media (hover: hover) { .title-edit:hover { background: var(--hover); } }
 .title-edit:focus { outline: 0; border-color: var(--accent); background: var(--bg); }
 .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0 12px; margin-bottom: 8px; }
-h3.section { font-size: 13px; margin: 18px 0 8px; }
-.body { overflow-wrap: anywhere; padding: 6px 7px; margin: 0 -7px; border-radius: 4px; cursor: text; min-height: 34px; }
-@media (hover: hover) { .body:hover { background: var(--hover); } }
-.body h3, .body h4, .body h5, .body h6 { margin: 12px 0 4px; font-size: 14px; }
-.body > :first-child { margin-top: 0; }
-li.tick { list-style: none; margin-left: -18px; }
+h3.section { font-size: 15px; font-weight: 700; margin: 30px 0 10px; }
+.item-main > h3.section:first-child { margin-top: 4px; }
+.body { overflow-wrap: anywhere; }
+textarea.input.tall { min-height: 320px; }
+/* Long tickets are mostly read, so they get a reading layout: roomy lines, a comfortable width, and a rule above each section */
+.body, .body-md { font-size: 15px; line-height: 1.65; max-width: 68ch; }
+.body h3, .body h4, .body h5, .body h6 { margin: 24px 0 8px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 15px; font-weight: 700; line-height: 1.35; }
+.body > :first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.body li { margin-bottom: 9px; }
+/* The mark hangs to the left, so wrapped lines start under the words */
+li.tick { list-style: none; margin-left: -22px; padding-left: 1.6em; text-indent: -1.6em; }
+li.tick > span { display: inline-block; width: 1.6em; text-indent: 0; }
 li.ticked { color: var(--quiet); }
 li.tick > span { color: var(--done); }
-.body p { margin: 0 0 8px; } .body ul, .body ol { margin: 0 0 8px; padding-left: 22px; }
+.body p, .body-md p { margin: 0 0 12px; } .body ul, .body ol { margin: 0 0 14px; padding-left: 22px; }
 .body code, .comment code { font-size: 12.5px; background: var(--col); padding: 1px 4px; border-radius: 3px; overflow-wrap: anywhere; }
 .body pre { background: var(--col); padding: 8px; overflow-x: auto; border-radius: 4px; }
 .scroll { overflow-x: auto; } table { border-collapse: collapse; } th, td { border: 1px solid var(--line); padding: 4px 7px; text-align: left; }
 .quiet { color: var(--quiet); }
-.comment { display: flex; gap: 8px; margin-bottom: 12px; }
+.comment { display: flex; gap: 10px; margin-bottom: 18px; }
 .comment > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .comment .who { font-weight: 600; } .comment .when { color: var(--quiet); font-size: 12px; margin-left: 6px; }
-.history { font-size: 12px; color: var(--quiet); margin: 0 0 4px; }
+.history { font-size: 13px; line-height: 1.5; color: var(--quiet); margin: 0 0 6px; }
 .addbar { display: flex; gap: 6px; margin-top: 6px; }
 .table-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .table-row b { flex: 1; min-width: 100px; }

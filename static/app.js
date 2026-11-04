@@ -499,19 +499,18 @@ function drawItem(i) {
     closeShade(s); await refresh();
   });
   const bodyBox = s.querySelector("#bodybox");
+  // An Edit button rather than tapping the text, so selecting words or scrolling on a phone never opens the editor.
   const showBody = () => {
-    bodyBox.innerHTML = `<div class="body" ${canEdit() ? 'tabindex="0" role="button" aria-label="Edit description"' : ""}>${i.body ? mdToHtml(i.body) : '<p class="quiet">Add a description</p>'}</div>`;
-    const area = bodyBox.firstChild;
-    if (!canEdit()) return;
-    const edit = e => {
-      if (e.target.closest("a")) return;
-      bodyBox.innerHTML = `<textarea class="input" id="bodyedit" aria-label="Description">${esc(i.body)}</textarea><div class="addbar"><button class="btn primary" id="bsave">Save</button><button class="btn" id="bcancel">Cancel</button></div>`;
+    bodyBox.innerHTML = `<div class="body">${i.body ? mdToHtml(i.body) : '<p class="quiet">No description yet.</p>'}</div>
+      ${canEdit() ? `<button class="btn" id="editbody">${i.body ? "Edit description" : "Add a description"}</button>` : ""}`;
+    const open = bodyBox.querySelector("#editbody");
+    if (!open) return;
+    open.onclick = () => {
+      bodyBox.innerHTML = `<textarea class="input tall" id="bodyedit" aria-label="Description">${esc(i.body)}</textarea><div class="addbar"><button class="btn primary" id="bsave">Save description</button><button class="btn" id="bcancel">Cancel</button></div>`;
       bodyBox.querySelector("#bsave").onclick = () => save({ body: bodyBox.querySelector("#bodyedit").value });
       bodyBox.querySelector("#bcancel").onclick = showBody;
       bodyBox.querySelector("#bodyedit").focus();
     };
-    area.onclick = edit;
-    area.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); edit(e); } };
   };
   showBody();
   const sub = s.querySelector("#addsub");

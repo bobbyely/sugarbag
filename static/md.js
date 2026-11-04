@@ -18,7 +18,7 @@
     const box = /^\[( |x)\] (.*)/i.exec(s);
     if (!box) return `<li>${inline(s)}</li>`;
     const done = box[1] !== " ";
-    return `<li class="tick${done ? " ticked" : ""}"><span aria-label="${done ? "Done" : "Not done"}">${done ? "☑" : "☐"}</span> ${inline(box[2])}</li>`;
+    return `<li class="tick${done ? " ticked" : ""}"><span aria-label="${done ? "Done" : "Not done"}">${done ? "☑" : "☐"}</span>${inline(box[2])}</li>`;
   };
 
   root.mdToHtml = function (text) {
