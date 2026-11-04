@@ -19,7 +19,8 @@ Or with Docker: see `compose.example.yml`.
 - **Levels:** Epic > Story, Task or Bug > Sub-task. Stories and tasks sit level, so nobody has to decide which contains which.
 - **Issues:** keys such as `ABO-12`, priority, assignee, labels, start and due dates, Markdown description, comments, history. An issue opens in the middle of the screen (`/#ABO-12`) or as its own page (`/?issue=ABO-12`).
 - **List:** everything, nested, including epics and sub-tasks.
-- **Look:** light, dark, or following the device. The choice stays on that device.
+- **Your view:** hide or show columns for yourself. Light, dark, or following the device. Change your own name.
+- **Cards show age:** days in the current column, turning amber after 14 days in a working column.
 - **Search and filters:** by words, assignee and epic.
 - **Roles:** admin (people, projects, delete anything), member (make and change issues, delete their own), viewer (read only).
 - **API tokens:** for agents and scripts.
@@ -49,6 +50,7 @@ JSON. Sign in with `Authorization: Bearer <token>`. Make a token in the page's s
 | `POST /api/items/ABO-12/move` | `{status, before}`: to a column, above the card `before`, or at the bottom. |
 | `DELETE /api/items/ABO-12` | Creator or admin. Takes its sub-items too. |
 | `POST /api/items/ABO-12/comments` | `{body}`. |
+| `GET /api/me`, `PATCH /api/me`, `PUT /api/me/hidden/ABO` | You. Change your name with `{name}`. Set columns you hide on a project's board with `{columns: [slug]}`. |
 | `GET /api/users`, `POST /api/users`, `PATCH /api/users/<name>` | People. Changes need an admin. |
 | `GET /api/tokens`, `POST /api/tokens`, `DELETE /api/tokens/<id>` | Your own tokens. |
 | `GET /api/export` | Everything except passwords and tokens. Admin. |

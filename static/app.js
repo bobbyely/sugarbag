@@ -5,6 +5,7 @@ const $app = document.getElementById("app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const TYPE_NAMES = { epic: "Epic", story: "Story", task: "Task", bug: "Bug", subtask: "Sub-task" };
 const PRIORITIES = ["highest", "high", "medium", "low", "lowest"];
+const STALE_DAYS = 14;  // a card this long in one working column is probably stuck
 const state = { me: null, projects: [], project: null, items: [], users: [], view: "board", q: "", assignee: "", epic: "", openKey: null, name: "Sugarbag" };
 try { Object.assign(state, JSON.parse(localStorage.getItem("sugarbag") || "{}")); } catch { /* a private window has no storage; the defaults do */ }
 state.me = null; state.openKey = null;
@@ -52,10 +53,11 @@ const PRIORITY_PATHS = {
 };
 const priorityIcon = p => `<svg class="icon pr-${p}" viewBox="0 0 16 16" role="img" aria-label="${p} priority"><path d="${PRIORITY_PATHS[p]}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const hash = s => [...s].reduce((n, c) => (n * 31 + c.charCodeAt(0)) >>> 0, 7);
-const avatar = name => name ? `<span class="avatar av${hash(name) % 8}" title="${esc(name)}">${esc(name.slice(0, 2).toUpperCase())}</span>` : '<span class="avatar none" title="Nobody">?</span>';
+const avatar = name => name ? `<span class="avatar av${hash(name) % 8}" title="${esc(name)}">${esc(name.slice(0, 2).toUpperCase())}</span>` : '<span class="avatar none" title="Nobody yet"></span>';
 const LOGO = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="7" cy="7.5" rx="4.5" ry="3" transform="rotate(-30 7 7.5)" fill="currentColor" opacity=".35"/><ellipse cx="17" cy="7.5" rx="4.5" ry="3" transform="rotate(30 17 7.5)" fill="currentColor" opacity=".35"/><ellipse cx="12" cy="14" rx="5.5" ry="7.5" fill="#e8a317"/><path d="M6.9 11.500h10.200M6.7 15.500h10.6" stroke="#172b4d" stroke-width="2.2"/></svg>';
 const SUN_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg>';
 const GEAR_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.500v2M8 12.500v2M1.5 8h2M12.5 8h2M3.4 3.400l1.4 1.400M11.2 11.200l1.4 1.400M3.4 12.600l1.4-1.400M11.2 4.800l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+const COLUMNS_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5h3v11H2zM6.5 2.5h3v7h-3zM11 2.5h3v9h-3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
 const COMMENT_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v8H7l-3 3v-3H2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
 const projectInfo = () => state.projects.find(p => p.key === state.project);
 const statusInfo = slug => projectInfo()?.statuses.find(s => s.slug === slug);
@@ -117,7 +119,8 @@ function drawShell() {
       <button class="btn icon-btn" id="settings" aria-label="Settings">${GEAR_ICON}<span>Settings</span></button></div>
     <div class="filters"><label class="sr" for="q">Search</label><input class="input" id="q" type="search" placeholder="Search" value="${esc(state.q)}">
       <label class="sr" for="who">Assignee</label><select class="input" id="who"></select>
-      <label class="sr" for="epic">Epic</label><select class="input" id="epic"></select></div>
+      <label class="sr" for="epic">Epic</label><select class="input" id="epic"></select>
+      <button class="btn icon-btn" id="columns" aria-label="Show or hide columns">${COLUMNS_ICON}<span>Columns${hiddenColumns().length ? ` (${hiddenColumns().length} hidden)` : ""}</span>${hiddenColumns().length ? `<b class="hide-wide">${hiddenColumns().length}</b>` : ""}</button></div>
     <div id="view"></div>`;
   document.getElementById("project").onchange = attempt(async e => {
     if (e.target.value === "+new") { e.target.value = state.project || ""; return openNewProject(); }
@@ -128,6 +131,7 @@ function drawShell() {
   document.getElementById("who").onchange = e => { state.assignee = e.target.value; drawView(); };
   document.getElementById("epic").onchange = e => { state.epic = e.target.value; drawView(); };
   document.getElementById("settings").onclick = attempt(openSettings);
+  document.getElementById("columns").onclick = attempt(() => openColumns(state.project));
   document.getElementById("theme").onclick = () => {
     const order = Object.keys(THEMES);
     state.theme = order[(order.indexOf(state.theme || "auto") + 1) % order.length];
@@ -171,17 +175,22 @@ function drawView() {
 
 function cardHtml(i) {
   const overdue = i.due && i.due < today() && !statusInfo(i.status)?.is_done;
+  // Finished work has no clock. Ideas can wait for ever, so only later columns turn amber.
+  const s = statusInfo(i.status);
+  const days = Math.floor((Date.now() / 1000 - (i.status_since || i.created)) / 86400);
+  const age = !s?.is_done && days >= 1 ? `<span class="age${s?.position && days >= STALE_DAYS ? " stale" : ""}" title="${days} day${days === 1 ? "" : "s"} in this column">${days}d</span>` : "";
   const tags = (i.parent_type === "epic" ? `<span class="lozenge epic">${esc(i.parent_title)}</span>` : "") +
-    i.labels.map(l => `<span class="lozenge">${esc(l)}</span>`).join("") + (overdue ? `<span class="lozenge overdue">Due ${esc(i.due)}</span>` : "");
+    i.labels.map(l => `<span class="lozenge">${esc(l)}</span>`).join("") + (overdue ? `<span class="lozenge overdue">Due ${esc(new Date(i.due + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short" }))}</span>` : "");
   return `<button class="card${statusInfo(i.status)?.is_done ? " is-done" : ""}" data-key="${esc(i.key)}">
-    <span class="title">${esc(i.title)}</span>${tags ? `<span class="tags">${tags}</span>` : ""}
+    <span class="title">${mdInline(i.title)}</span>${tags ? `<span class="tags">${tags}</span>` : ""}
     <span class="meta">${typeIcon(i.type)}<span>${esc(i.key)}</span>
       ${i.children ? `<span class="progress" title="Sub-tasks done">${i.children_done}/${i.children}</span>` : ""}
       ${i.comment_count ? `<span class="progress" title="Comments">${COMMENT_ICON}${i.comment_count}</span>` : ""}
-      <span class="right">${priorityIcon(i.priority)}${avatar(i.assignee)}</span></span></button>`;
+      <span class="right">${age}${i.priority === "medium" ? "" : priorityIcon(i.priority)}${avatar(i.assignee)}</span></span></button>`;
 }
 
 // Epics are themes and sub-tasks are steps inside a card, so neither gets a card of its own.
+const hiddenColumns = () => state.me?.hidden?.[state.project] || [];
 const onBoard = i => i.type !== "epic" && i.type !== "subtask" && matches(i);
 
 let boardShown = false;
@@ -189,7 +198,8 @@ let boardShown = false;
 function drawBoard(box) {
   const scroll = box.scrollLeft;
   box.className = "board";
-  box.innerHTML = projectInfo().statuses.map(s => {
+  const hidden = hiddenColumns();
+  box.innerHTML = projectInfo().statuses.filter(s => !hidden.includes(s.slug)).map(s => {
     const cards = state.items.filter(i => i.status === s.slug && onBoard(i)).sort((a, b) => a.position - b.position);
     return `<section class="column" data-status="${esc(s.slug)}" aria-label="${esc(s.name)}">
       <header><span>${esc(s.name)}</span><span class="count">${cards.length}</span>${s.is_done ? '<span class="tick" aria-hidden="true">✓</span>' : ""}</header>
@@ -305,7 +315,7 @@ function drawList(box) {
   const rows = [];
   const add = (i, depth) => {
     rows.push(`<button class="row ${depth === 1 ? "child" : depth === 2 ? "grand" : ""}" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span>
-      <span class="t">${esc(i.title)}</span>${statusChip(i.status)}${priorityIcon(i.priority)}${avatar(i.assignee)}</button>`);
+      <span class="t">${mdInline(i.title)}</span>${statusChip(i.status)}${priorityIcon(i.priority)}${avatar(i.assignee)}</button>`);
     state.items.filter(k => k.parent === i.key).sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true })).forEach(k => { if (matches(k) || state.q) add(k, depth + 1); });
   };
   // Anything whose parent is hidden still shows, at the top level.
@@ -351,7 +361,7 @@ function openNewProject() {
   const s = shade(`<form class="dialog"><h2>New project</h2><p class="err" hidden></p>
     <label class="field">Name<input class="input" name="name" maxlength="80" required></label>
     <label class="field">Key: the short code at the start of its ticket numbers. AB makes AB-1.<input class="input" name="key" maxlength="10" autocapitalize="characters" required></label>
-    <div class="addbar"><button class="btn primary">Make it</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
+    <div class="addbar"><button class="btn primary">Create project</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
   const f = s.querySelector("form");
   // Suggest a key from the name, until the person types their own.
   f.name.oninput = () => { if (!f.key.dataset.typed) f.key.value = f.name.value.replace(/[^a-z0-9]/gi, "").slice(0, 3).toUpperCase(); };
@@ -379,7 +389,7 @@ function openCreate(preset = {}) {
     <label class="field">Priority<select class="input" name="priority">${priorityOptions("medium")}</select></label>
     <label class="field">Assignee<select class="input" name="assignee">${userOptions(state.me.name)}</select></label></div>
     <label class="field">Description<textarea class="input" name="body"></textarea></label>
-    <div class="addbar"><button class="btn primary">Make it</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
+    <div class="addbar"><button class="btn primary">Create ticket</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
   const f = s.querySelector("form");
   f.type.onchange = () => { f.parent.innerHTML = parentOptions(f.type.value); };
   s.querySelector("#cancel").onclick = () => closeShade(s);
@@ -423,29 +433,31 @@ function drawItem(i) {
   const s = shade(`<div class="panel" role="dialog" aria-modal="true" aria-label="${esc(i.key)} ${esc(i.title)}">
     <div class="panel-top">${typeIcon(i.type)}${i.parent ? `<button class="btn link" data-open="${esc(i.parent)}">${esc(i.parent)}</button> /` : ""}<span>${esc(i.key)}</span>
       <span class="right">${wholePage ? "" : `<a class="btn" href="?issue=${encodeURIComponent(i.key)}">Open as page</a>`}
-        ${canEdit() ? '<button class="btn danger" id="del">Delete</button>' : ""}<button class="btn" id="close">${wholePage ? "Back to board" : "Close"}</button></span></div>
+        <button class="btn" id="close">${wholePage ? "Back to board" : "Close"}</button></span></div>
     <label class="sr" for="title">Title</label><textarea class="title-edit" id="title" rows="1" maxlength="300"${ro}>${esc(i.title)}</textarea>
     <div class="item-grid">
       <aside class="item-side">
-        <label class="field">Status<select class="input" data-f="status"${ro}>${statusOptions(i.status)}</select></label>
-        <label class="field">Assignee<select class="input" data-f="assignee"${ro}>${userOptions(i.assignee)}</select></label>
+        <div class="key-fields"><label class="field">Status<select class="input" data-f="status"${ro}>${statusOptions(i.status)}</select></label>
+        <label class="field">Assignee<select class="input" data-f="assignee"${ro}>${userOptions(i.assignee)}</select></label></div>
+        <details class="more"${innerWidth > 700 ? " open" : ""}><summary>More details</summary><div class="more-fields">
         <label class="field">Priority<select class="input" data-f="priority"${ro}>${priorityOptions(i.priority)}</select></label>
         <label class="field">Type<select class="input" data-f="type"${ro}>${typeOptions(i.type)}</select></label>
         <label class="field">Parent<select class="input" data-f="parent"${ro}>${parentOptions(i.type, i.parent)}</select></label>
         <label class="field">Labels<input class="input" data-f="labels" value="${esc(i.labels.join(", "))}"${ro} placeholder="comma, separated"></label>
         <label class="field">Start<input class="input" type="date" data-f="start" value="${esc(i.start)}"${ro}></label>
-        <label class="field">Due<input class="input" type="date" data-f="due" value="${esc(i.due)}"${ro}></label>
+        <label class="field">Due<input class="input" type="date" data-f="due" value="${esc(i.due)}"${ro}></label></div></details>
       </aside>
       <div class="item-main">
         <h3 class="section">Description</h3><div id="bodybox"></div>
         ${i.type === "subtask" ? "" : `<h3 class="section">${i.type === "epic" ? "Issues in this epic" : "Sub-tasks"}${i.children ? ` <span class="quiet">${i.children_done}/${i.children} done</span>` : ""}</h3>
-          <div class="subs">${i.subitems.map(k => `<button class="row" data-open="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${esc(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("")}</div>
+          <div class="subs">${i.subitems.map(k => `<button class="row" data-open="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${mdInline(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("")}</div>
           ${canEdit() ? `<form class="addbar" id="addsub"><label class="sr" for="subtitle">New</label><input class="input" id="subtitle" placeholder="Add ${i.type === "epic" ? "a task" : "a sub-task"}" maxlength="300"><button class="btn">Add</button></form>` : ""}`}
         <h3 class="section" id="comments">Comments${i.comments.length ? ` <span class="quiet">${i.comments.length}</span>` : ""}</h3>
         ${canEdit() ? '<form id="addcomment"><label class="sr" for="comment">Add a comment</label><textarea class="input short" id="comment" placeholder="Add a comment"></textarea><div class="addbar"><button class="btn primary">Save</button></div></form>' : ""}
         <div class="comment-list">${[...i.comments].reverse().map(c => `<div class="comment">${avatar(c.user)}<div><span class="who">${esc(c.user || "Someone")}</span><span class="when">${when(c.at)}</span><div class="body-md">${mdToHtml(c.body)}</div></div></div>`).join("") || '<p class="quiet">None yet.</p>'}</div>
         <h3 class="section">History</h3>
         ${i.activity.map(a => `<p class="history"><b>${esc(a.user || "Someone")}</b> changed ${esc(a.field.replace("_id", "").replace("_date", ""))}${a.new !== null && a.field !== "assignee_id" && a.field !== "parent_id" && a.field !== "labels" ? ` to ${esc(a.new)}` : ""}, ${when(a.at)}</p>`).join("") || '<p class="history">Made by ' + esc(i.created_by || "someone") + ", " + when(i.created) + ".</p>"}
+        ${canEdit() ? `<div class="danger-row"><button class="btn danger" id="del">Delete ticket</button></div>` : ""}
       </div>
     </div>
   </div>`, true);
@@ -541,17 +553,34 @@ async function openSettings() {
   const tokens = await api("GET", "/api/tokens");
   const admin = state.me.role === "admin";
   const s = shade(`<div class="dialog"><h2>Settings</h2><p class="quiet">Signed in as ${esc(state.me.name)} (${esc(state.me.role)}).</p>
+    <h3 class="section">Your name</h3><form class="addbar" id="rename"><label class="sr" for="myname">Your name</label><input class="input" id="myname" value="${esc(state.me.name)}" autocapitalize="none" autocomplete="username" maxlength="80" required><button class="btn">Save name</button></form>
+    <h3 class="section">Look</h3><div class="addbar" id="themes">${Object.entries(THEMES).map(([k, v]) => `<button class="btn" type="button" data-theme-pick="${k}" aria-pressed="${(state.theme || "auto") === k}">${v}</button>`).join("")}</div>
     ${admin ? `<h3 class="section">Projects</h3>${state.projects.map(p => `<div class="table-row"><b>${esc(p.name)}</b><span class="quiet">${esc(p.key)}</span><button class="btn" data-columns="${esc(p.key)}">Columns</button></div>`).join("")}
       <div class="addbar"><button class="btn" type="button" id="addproject">+ New project</button></div>
       <h3 class="section">People</h3><div id="people"></div>
       <form class="addbar" id="adduser"><label class="sr" for="uname">Name</label><input class="input" id="uname" placeholder="Name" autocapitalize="none" required><label class="sr" for="upass">Password</label><input class="input" id="upass" type="password" placeholder="Password" autocomplete="new-password" minlength="8" required><label class="sr" for="urole">Role</label><select class="input" id="urole"><option>member</option><option>viewer</option><option>admin</option></select><button class="btn">Add</button></form>` : ""}
-    ${canEdit() ? `<h3 class="section">API tokens</h3><p class="quiet">For agents and scripts. A token acts as you.</p><div id="tokens">${tokens.map(t => `<div class="table-row"><b>${esc(t.label)}</b><span class="quiet">${t.last_used ? "used " + when(t.last_used) : "not used yet"}</span><button class="btn danger" data-token="${t.id}">Remove</button></div>`).join("")}</div>
-      <div id="newtoken"></div><form class="addbar" id="addtoken"><label class="sr" for="tlabel">What is it for?</label><input class="input" id="tlabel" placeholder="What is it for?" required><button class="btn">Make</button></form>` : ""}
-    <h3 class="section">Change password</h3><form class="addbar" id="pw"><label class="sr" for="oldpw">Old password</label><input class="input" id="oldpw" type="password" placeholder="Old" autocomplete="current-password" required><label class="sr" for="newpw">New password</label><input class="input" id="newpw" type="password" placeholder="New" autocomplete="new-password" minlength="8" required><button class="btn">Change</button></form>
+    ${canEdit() ? `<h3 class="section">API tokens</h3><p class="quiet">For agents and scripts. A token acts as you.</p><div id="tokens">${tokens.map(t => `<div class="table-row"><b>${esc(t.label)}</b><span class="quiet">${t.last_used ? "used " + when(t.last_used) : "not used yet"}</span><button class="btn danger" data-token="${t.id}">Revoke</button></div>`).join("")}</div>
+      <div id="newtoken"></div><form class="addbar" id="addtoken"><label class="sr" for="tlabel">What is it for?</label><input class="input" id="tlabel" placeholder="What is it for?" required><button class="btn">Create token</button></form>` : ""}
+    <h3 class="section">Change password</h3><form class="addbar" id="pw"><label class="sr" for="oldpw">Old password</label><input class="input" id="oldpw" type="password" placeholder="Old" autocomplete="current-password" required><label class="sr" for="newpw">New password</label><input class="input" id="newpw" type="password" placeholder="New" autocomplete="new-password" minlength="8" required><button class="btn">Change password</button></form>
     <div class="addbar"><button class="btn" id="out">Sign out</button><button class="btn" id="close">Close</button></div></div>`, true);
   s.querySelector("#close").onclick = () => closeShade(s);
   const again = async () => { closeShade(s); state.users = await api("GET", "/api/users"); state.projects = await api("GET", "/api/projects"); await openSettings(); };
   s.querySelector("#out").onclick = attempt(async () => { await api("POST", "/api/logout", {}); closeShade(s); state.me = null; drawLogin(); });
+  s.querySelector("#rename").onsubmit = attempt(async e => {
+    e.preventDefault();
+    const old = state.me.name;
+    Object.assign(state.me, await api("PATCH", "/api/me", { name: s.querySelector("#myname").value }));
+    if (state.assignee === old) state.assignee = state.me.name;
+    await load(); drawShell();  // cards name the assignee, so they change too
+    await again();
+    toast("Name saved.");
+  });
+  s.querySelectorAll("[data-theme-pick]").forEach(b => {
+    b.onclick = () => {
+      state.theme = b.dataset.themePick; applyTheme(); remember(); drawShell();
+      s.querySelectorAll("[data-theme-pick]").forEach(x => x.setAttribute("aria-pressed", x === b));
+    };
+  });
   s.querySelector("#pw").onsubmit = attempt(async e => {
     e.preventDefault();
     await api("POST", "/api/password", { old: s.querySelector("#oldpw").value, new: s.querySelector("#newpw").value });
@@ -571,7 +600,7 @@ async function openSettings() {
   const people = s.querySelector("#people");
   people.innerHTML = state.users.map(u => `<div class="table-row"><b>${esc(u.name)}</b>
     <label class="sr" for="role-${esc(u.name)}">Role</label><select class="input" id="role-${esc(u.name)}" data-user="${esc(u.name)}">${["admin", "member", "viewer"].map(r => `<option${r === u.role ? " selected" : ""}>${r}</option>`).join("")}</select>
-    <button class="btn" data-active="${esc(u.name)}" data-to="${u.active ? "off" : "on"}">${u.active ? "Switch off" : "Switch on"}</button></div>`).join("");
+    <button class="btn" data-active="${esc(u.name)}" data-to="${u.active ? "off" : "on"}">${u.active ? "Disable" : "Enable"}</button></div>`).join("");
   people.querySelectorAll("select[data-user]").forEach(el => { el.onchange = attempt(async () => { try { await api("PATCH", `/api/users/${encodeURIComponent(el.dataset.user)}`, { role: el.value }); } finally { await again(); } }); });
   people.querySelectorAll("[data-active]").forEach(b => { b.onclick = attempt(async () => { await api("PATCH", `/api/users/${encodeURIComponent(b.dataset.active)}`, { active: b.dataset.to === "on" }); await again(); }); });
   s.querySelector("#adduser").onsubmit = attempt(async e => {
@@ -586,24 +615,30 @@ async function openSettings() {
 
 async function openColumns(key) {
   const project = state.projects.find(p => p.key === key);
+  const admin = state.me.role === "admin";
   const items = await api("GET", `/api/items?project=${encodeURIComponent(key)}`);
   const count = slug => items.filter(i => i.status === slug).length;
-  const cols = project.statuses.map(c => ({ slug: c.slug, name: c.name, is_done: !!c.is_done }));
+  const was = state.me.hidden?.[key] || [];
+  const cols = project.statuses.map(c => ({ slug: c.slug, name: c.name, is_done: !!c.is_done, show: !was.includes(c.slug) }));
   const removed = [];
-  const s = shade(`<form class="dialog"><h2>Columns: ${esc(project.name)}</h2><p class="err" hidden></p><div id="cols"></div>
-    <button class="btn" type="button" id="addcol">Add a column</button><div id="moves"></div>
-    <div class="addbar"><button class="btn primary">Save</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
+  const s = shade(`<form class="dialog"><h2>Columns: ${esc(project.name)}</h2>
+    <p class="quiet">Show or hide a column on your own board. ${admin ? "Name, order and removal change it for everyone." : "An admin can change the columns themselves."}</p><p class="err" hidden></p><div id="cols"></div>
+    ${admin ? '<button class="btn" type="button" id="addcol">Add a column</button><div id="moves"></div>' : ""}
+    <div class="addbar"><button class="btn primary">Save columns</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
   const box = s.querySelector("#cols"), moves = s.querySelector("#moves");
   const draw = () => {
-    box.innerHTML = cols.map((c, n) => `<div class="table-row" data-n="${n}">
-      <label class="sr" for="col${n}">Name</label><input class="input col-name" id="col${n}" maxlength="40" value="${esc(c.name)}" required>
-      <label class="done-box"><input type="checkbox" data-done${c.is_done ? " checked" : ""}> Done</label>
-      <button class="btn" type="button" data-up aria-label="Move ${esc(c.name)} up"${n ? "" : " disabled"}>↑</button>
-      <button class="btn" type="button" data-down aria-label="Move ${esc(c.name)} down"${n < cols.length - 1 ? "" : " disabled"}>↓</button>
-      <button class="btn danger" type="button" data-remove aria-label="Remove ${esc(c.name)}"${cols.length > 1 ? "" : " disabled"}>✕</button></div>`).join("");
-    box.querySelectorAll(".table-row").forEach(row => {
+    box.innerHTML = cols.map((c, n) => `<div class="col-row" data-n="${n}">
+      ${admin ? `<label class="sr" for="col${n}">Name</label><input class="input col-name" id="col${n}" maxlength="40" value="${esc(c.name)}" required>` : `<b class="col-name">${esc(c.name)}</b>`}
+      <span class="col-tools"><label class="check"><input type="checkbox" data-show${c.show ? " checked" : ""}> Show</label>
+      ${admin ? `<label class="check"><input type="checkbox" data-done${c.is_done ? " checked" : ""}> Done</label>
+      <button class="btn" type="button" data-up aria-label="Move ${esc(c.name)} left"${n ? "" : " disabled"}>←</button>
+      <button class="btn" type="button" data-down aria-label="Move ${esc(c.name)} right"${n < cols.length - 1 ? "" : " disabled"}>→</button>
+      <button class="btn danger" type="button" data-remove aria-label="Remove ${esc(c.name)}"${cols.length > 1 ? "" : " disabled"}>Remove</button>` : ""}</span></div>`).join("");
+    box.querySelectorAll(".col-row").forEach(row => {
       const n = +row.dataset.n;
-      row.querySelector(".col-name").oninput = e => { cols[n].name = e.target.value; };
+      row.querySelector("[data-show]").onchange = e => { cols[n].show = e.target.checked; };
+      if (!admin) return;
+      row.querySelector("input.col-name").oninput = e => { cols[n].name = e.target.value; };
       row.querySelector("[data-done]").onchange = e => { cols[n].is_done = e.target.checked; };
       row.querySelector("[data-up]").onclick = () => { [cols[n - 1], cols[n]] = [cols[n], cols[n - 1]]; draw(); };
       row.querySelector("[data-down]").onclick = () => { [cols[n + 1], cols[n]] = [cols[n], cols[n + 1]]; draw(); };
@@ -616,6 +651,7 @@ async function openColumns(key) {
         draw();
       };
     });
+    if (!moves) return;
     // Only columns that already exist can take cards: a new one has no slug until it's saved.
     const targets = cols.filter(c => c.slug);
     moves.innerHTML = removed.map((r, n) => `<label class="field">Move the ${count(r.slug)} items in ${esc(r.name)} to
@@ -624,16 +660,24 @@ async function openColumns(key) {
     moves.querySelectorAll("select").forEach(el => { el.onchange = () => { removed[+el.dataset.move].to = el.value; }; });
   };
   draw();
-  s.querySelector("#addcol").onclick = () => { cols.push({ name: "", is_done: false }); draw(); box.querySelector(".table-row:last-child input").focus(); };
+  const add = s.querySelector("#addcol");
+  if (add) add.onclick = () => { cols.push({ name: "", is_done: false, show: true }); draw(); box.querySelector(".col-row:last-child input.col-name").focus(); };
   s.querySelector("#cancel").onclick = () => closeShade(s);
   s.querySelector("form").onsubmit = async e => {
     e.preventDefault();
+    const err = s.querySelector(".err");
+    if (!cols.some(c => c.show)) { err.textContent = "Keep at least one column showing."; err.hidden = false; return; }
     try {
-      await api("PUT", `/api/projects/${encodeURIComponent(key)}/columns`, { columns: cols, move: Object.fromEntries(removed.map(r => [r.slug, r.to])) });
+      let saved = project;
+      if (admin) saved = await api("PUT", `/api/projects/${encodeURIComponent(key)}/columns`, { columns: cols.map(c => ({ slug: c.slug, name: c.name, is_done: c.is_done })), move: Object.fromEntries(removed.map(r => [r.slug, r.to])) });
+      // A new column only has a slug once saved. It starts showing unless it was unticked here, so match by name.
+      const hide = cols.filter(c => !c.show).map(c => c.slug || saved.statuses.find(x => x.name === c.name.trim())?.slug).filter(Boolean);
+      const hidden = await api("PUT", `/api/me/hidden/${encodeURIComponent(key)}`, { columns: hide });
+      state.me.hidden = { ...state.me.hidden, [key]: hidden };
       closeShade(s);
       state.projects = await api("GET", "/api/projects");
       await load(); drawShell();
-    } catch (err) { const p = s.querySelector(".err"); p.textContent = err.message; p.hidden = false; }
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
   };
 }
 

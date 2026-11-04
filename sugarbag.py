@@ -36,7 +36,8 @@ from urllib.parse import parse_qs, urlparse
 VERSION = "0.1.0"
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
-PAGES = {"/": "index.html", "/app.js": "app.js", "/md.js": "md.js", "/style.css": "style.css"}
+PAGES = {"/": "index.html", "/app.js": "app.js", "/md.js": "md.js", "/style.css": "style.css",
+         "/favicon.svg": "favicon.svg", "/apple-touch-icon.png": "apple-touch-icon.png"}
 
 TYPES = ("epic", "story", "task", "bug", "subtask")
 PRIORITIES = ("highest", "high", "medium", "low", "lowest")
@@ -49,7 +50,7 @@ KEY = re.compile(r"^([A-Z][A-Z0-9]{1,9})-(\d+)$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
-  password TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL);
+  password TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL, hidden_columns TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS tokens (id INTEGER PRIMARY KEY, hash TEXT NOT NULL UNIQUE, user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   label TEXT NOT NULL, created INTEGER NOT NULL, last_used INTEGER);
@@ -59,7 +60,7 @@ CREATE TABLE IF NOT EXISTS statuses (project_id INTEGER NOT NULL REFERENCES proj
 CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects ON DELETE CASCADE, num INTEGER NOT NULL,
   type TEXT NOT NULL, parent_id INTEGER REFERENCES items ON DELETE CASCADE, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'medium', assignee_id INTEGER REFERENCES users ON DELETE SET NULL,
-  labels TEXT NOT NULL DEFAULT '[]', position REAL NOT NULL, start_date TEXT, due_date TEXT, ref TEXT,
+  labels TEXT NOT NULL DEFAULT '[]', position REAL NOT NULL, start_date TEXT, due_date TEXT, ref TEXT, status_since INTEGER,
   created_by INTEGER REFERENCES users ON DELETE SET NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL,
   UNIQUE (project_id, num), UNIQUE (project_id, ref));
 CREATE INDEX IF NOT EXISTS items_board ON items (project_id, status, position);
@@ -93,10 +94,22 @@ def connect():
     return conn
 
 
+def upgrade(conn):
+    """Brings an older database up to this version. Safe to run every start."""
+    has = lambda table, column: any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))  # noqa: E731
+    if not has("users", "hidden_columns"):
+        conn.execute("ALTER TABLE users ADD COLUMN hidden_columns TEXT NOT NULL DEFAULT '{}'")
+    if not has("items", "status_since"):
+        conn.execute("ALTER TABLE items ADD COLUMN status_since INTEGER")
+        conn.execute("""UPDATE items SET status_since = COALESCE(
+                        (SELECT MAX(at) FROM activity a WHERE a.item_id = items.id AND a.field = 'status'), created)""")
+
+
 def init_db():
     conn = connect()
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    upgrade(conn)
     conn.close()
 
 
@@ -213,7 +226,7 @@ def item_json(row):
     return {"key": f"{key}-{row['num']}", "project": key, "type": row["type"], "title": row["title"], "body": row["body"],
             "status": row["status"], "priority": row["priority"], "assignee": row["assignee"], "labels": json.loads(row["labels"]),
             "parent": f"{key}-{row['parent_num']}" if row["parent_num"] else None, "parent_title": row["parent_title"], "parent_type": row["parent_type"],
-            "start": row["start_date"], "due": row["due_date"], "ref": row["ref"], "position": row["position"], "children": row["children"],
+            "start": row["start_date"], "due": row["due_date"], "ref": row["ref"], "status_since": row["status_since"], "position": row["position"], "children": row["children"],
             "children_done": row["children_done"], "comment_count": row["comment_count"], "created_by": row["creator"], "created": row["created"], "updated": row["updated"]}
 
 
@@ -304,6 +317,9 @@ def public_user(row):
     return {"name": row["name"], "role": row["role"], "active": bool(row["active"])}
 
 
+NAME = re.compile(r"^[\w.-]+$")
+
+
 @route("GET", "/health", None)
 def health(ctx):
     ctx.conn.execute("SELECT 1 FROM projects LIMIT 1")
@@ -347,7 +363,36 @@ def logout(ctx):
 
 @route("GET", "/api/me")
 def me(ctx):
-    return public_user(ctx.user)
+    return dict(public_user(ctx.user), hidden=json.loads(ctx.user["hidden_columns"]))
+
+
+@route("PATCH", "/api/me")
+def rename_me(ctx):
+    name = text(ctx.body, "name", 80, True)
+    if not NAME.match(name):
+        raise ApiError(400, "a name can only have letters, numbers, dots and dashes")
+    try:
+        ctx.conn.execute("UPDATE users SET name = ? WHERE id = ?", (name, ctx.user["id"]))
+    except sqlite3.IntegrityError:
+        raise ApiError(409, "that name is taken") from None
+    log.info("user renamed: %s to %s", ctx.user["name"], name)
+    return {"name": name, "role": ctx.user["role"], "active": True}
+
+
+@route("PUT", "/api/me/hidden/([^/]+)")
+def hide_columns(ctx, key):
+    """Which columns this person hides on this project's board. Their own view only, so a viewer may set it too."""
+    columns = ctx.body.get("columns")
+    if not isinstance(columns, list) or not all(isinstance(c, str) for c in columns):
+        raise ApiError(400, "columns must be a list of column names")
+    with tx(ctx.conn) as c:
+        project = find_project(c, key)
+        known = {s["slug"] for s in statuses_of(c, project["id"])}
+        row = c.execute("SELECT hidden_columns FROM users WHERE id = ?", (ctx.user["id"],)).fetchone()
+        hidden = json.loads(row["hidden_columns"])
+        hidden[key] = sorted(set(columns) & known)
+        c.execute("UPDATE users SET hidden_columns = ? WHERE id = ?", (json.dumps(hidden), ctx.user["id"]))
+    return hidden[key]
 
 
 @route("POST", "/api/password")
@@ -373,7 +418,7 @@ def add_user_route(ctx):
     password = ctx.body.get("password")
     if role not in ROLES:
         raise ApiError(400, "role must be admin, member or viewer")
-    if not re.match(r"^[\w.-]+$", name):
+    if not NAME.match(name):
         raise ApiError(400, "a name can only have letters, numbers, dots and dashes")
     if not isinstance(password, str) or len(password) < 8:
         raise ApiError(400, "a password needs at least 8 characters")
@@ -489,7 +534,7 @@ def set_columns(ctx, key):
             items = c.execute("SELECT id FROM items WHERE project_id = ? AND status = ? ORDER BY position", (project["id"], slug)).fetchall()
             for row in items:
                 record(c, row["id"], ctx.user["id"], "status", slug, moves[slug])
-                c.execute("UPDATE items SET status = ?, position = ? WHERE id = ?", (moves[slug], bottom_of(c, project["id"], moves[slug]), row["id"]))
+                c.execute("UPDATE items SET status = ?, position = ?, status_since = ? WHERE id = ?", (moves[slug], bottom_of(c, project["id"], moves[slug]), int(time.time()), row["id"]))
         log.info("columns changed in %s by %s", key, ctx.user["name"])
         return {"key": project["key"], "name": project["name"], "statuses": statuses_of(c, project["id"])}
 
@@ -539,10 +584,10 @@ def add_item(ctx):
         c.execute("UPDATE projects SET next_num = ? WHERE id = ?", (num + 1, project["id"]))
         try:
             item_id = c.execute("""INSERT INTO items (project_id, num, type, parent_id, title, body, status, priority, assignee_id, labels, position,
-                                   start_date, due_date, ref, created_by, created, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                   start_date, due_date, ref, status_since, created_by, created, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (project["id"], num, kind, parent["id"] if parent is not None else None, title, body, status, priority,
                                  find_assignee(c, b.get("assignee")), json.dumps(labels), bottom_of(c, project["id"], status),
-                                 start, due, ref, ctx.user["id"], now, now)).lastrowid
+                                 start, due, ref, now, ctx.user["id"], now, now)).lastrowid
         except sqlite3.IntegrityError:
             raise ApiError(409, f"an item with ref {ref} already exists") from None
     ctx.status = 201
@@ -587,6 +632,7 @@ def edit_item(ctx, key):
             check_status(c, row["project_id"], b["status"])
             new["status"] = b["status"]
             new["position"] = bottom_of(c, row["project_id"], b["status"])
+            new["status_since"] = int(time.time())
         kind = b.get("type", row["type"])
         if kind not in TYPES:
             raise ApiError(400, "bad type")
@@ -606,7 +652,7 @@ def edit_item(ctx, key):
         for column, value in new.items():
             if value != row[column]:
                 changed.append(column)
-                if column != "position":
+                if column not in ("position", "status_since"):
                     record(c, row["id"], ctx.user["id"], column, row[column] if column != "body" else None, value if column != "body" else None)
         if changed:
             sets = ", ".join(f"{col} = ?" for col in changed)
@@ -623,7 +669,9 @@ def move_item(ctx, key):
         position = position_before(c, row["project_id"], status, ctx.body.get("before"))
         if status != row["status"]:
             record(c, row["id"], ctx.user["id"], "status", row["status"], status)
-        c.execute("UPDATE items SET status = ?, position = ?, updated = ? WHERE id = ?", (status, position, int(time.time()), row["id"]))
+        now = int(time.time())
+        c.execute("UPDATE items SET status = ?, position = ?, updated = ?, status_since = ? WHERE id = ?",
+                  (status, position, now, now if status != row["status"] else row["status_since"], row["id"]))
     return load_item(ctx.conn, row["id"])
 
 
@@ -736,7 +784,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if self.command in ("GET", "HEAD") and url.path in PAGES:
             name = PAGES[url.path]
-            return self.send_bytes(200, (STATIC / name).read_bytes(), mimetypes.guess_type(name)[0] or "text/plain")
+            return self.send_bytes(200, (STATIC / name).read_bytes(), mimetypes.guess_type(name)[0] or "application/octet-stream")
         for method, pattern, role, fn in ROUTES:
             m = pattern.match(url.path)
             if m and method == ("GET" if self.command == "HEAD" else self.command):
