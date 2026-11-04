@@ -190,7 +190,14 @@ function cardHtml(i) {
 }
 
 const hiddenColumns = () => state.me?.hidden?.[state.project] || [];
-const onBoard = i => i.type !== "epic" && i.type !== "subtask" && matches(i);
+// An epic is a theme, so it never gets a card. A sub-task gets one only while it's being worked on: its parent waits in
+// its column and the step moves across. Waiting and finished steps stay inside their parent, or they'd swamp the board.
+const onBoard = i => {
+  if (i.type === "epic" || !matches(i)) return false;
+  if (i.type !== "subtask") return true;
+  const s = statusInfo(i.status);
+  return !!s && s.position >= 2 && !s.is_done;
+};
 
 let boardShown = false;
 

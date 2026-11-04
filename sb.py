@@ -100,7 +100,8 @@ def do_list(conf, args):
     for column in columns_of(conf, project):
         if column["is_done"] and not args.all:
             continue
-        rows = [i for i in items if i["status"] == column["slug"] and i["type"] not in ("epic", "subtask") and (not me or i["assignee"] == me)]
+        working = column["position"] >= 2 and not column["is_done"]  # the same rule as the board: a sub-task shows only while being worked on
+        rows = [i for i in items if i["status"] == column["slug"] and i["type"] != "epic" and (working or i["type"] != "subtask") and (not me or i["assignee"] == me)]
         if rows:
             print(f"\n{column['name']} ({column['slug']})")
         for i in rows:
