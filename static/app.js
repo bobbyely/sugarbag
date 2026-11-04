@@ -112,7 +112,7 @@ function drawShell() {
     (state.me.role === "admin" ? '<option value="+new">+ New project</option>' : "");
   $app.innerHTML = `<div class="top"><span class="brand">${LOGO}<span>${esc(state.name)}</span></span>
       <label class="sr" for="project">Project</label><select class="input" id="project">${options}</select>
-      <div class="tabs"><button data-view="board" aria-pressed="${state.view === "board"}">Board</button><button data-view="list" aria-pressed="${state.view === "list"}">List</button></div>
+      <div class="tabs"><button data-view="board" aria-pressed="${state.view === "board"}">Board</button><button data-view="list" aria-pressed="${state.view === "list"}">List</button><button data-view="roadmap" aria-pressed="${state.view === "roadmap"}">Roadmap</button></div>
       <span class="spacer"></span>
       ${canEdit() && state.project ? '<button class="btn primary" id="create" aria-label="New ticket">+ New<span class="wide"> ticket</span></button>' : ""}
       <button class="btn icon-btn" id="theme" aria-label="Colour theme: ${THEMES[state.theme] || "Auto"}. Tap to change.">${SUN_ICON}<span>${THEMES[state.theme] || "Auto"}</span></button>
@@ -170,6 +170,7 @@ function drawView() {
     const first = document.getElementById("first");
     if (first) first.onclick = openNewProject;
   } else if (state.view === "list") drawList(box);
+  else if (state.view === "roadmap") drawRoadmap(box);
   else drawBoard(box);
 }
 
@@ -331,6 +332,30 @@ function drawList(box) {
   shown.filter(i => !i.parent || !shown.some(p => p.key === i.parent)).sort((a, b) => (a.type === "epic" ? 0 : 1) - (b.type === "epic" ? 0 : 1) || a.key.localeCompare(b.key, undefined, { numeric: true })).forEach(i => add(i, 0));
   box.innerHTML = rows.join("") || '<p class="empty">Nothing here.</p>';
   box.querySelectorAll(".row").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
+}
+
+// --- The roadmap: one row per epic, with progress ---
+
+const openEpics = new Set();  // epics whose stories are showing; kept across redraws
+const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+
+function drawRoadmap(box) {
+  box.className = "list";
+  // No ticket needs a date, so undated epics sort after dated ones, by title with numbers in order ("Stage 2" before "Stage 10").
+  const isDone = i => !!statusInfo(i.status)?.is_done;
+  const epics = state.items.filter(i => i.type === "epic" && matches(i)).sort((a, b) =>
+    isDone(a) - isDone(b) || (a.start ? 0 : 1) - (b.start ? 0 : 1) || (a.start || "").localeCompare(b.start || "") || natural(a.title, b.title));
+  box.innerHTML = epics.map(e => {
+    const open = openEpics.has(e.key), stories = state.items.filter(k => k.parent === e.key).sort((a, b) => natural(a.key, b.key));
+    return `<div class="road${isDone(e) ? " is-done" : ""}"><div class="road-head">
+      <button class="road-toggle" data-toggle="${esc(e.key)}" aria-expanded="${open}" aria-label="${open ? "Hide" : "Show"} stories of ${esc(e.title)}"${stories.length ? "" : " disabled"}>${open ? "&#9662;" : "&#9656;"}</button>
+      <button class="road-main" data-key="${esc(e.key)}"><span class="road-top">${typeIcon("epic")}<span class="t">${mdInline(e.title)}</span>${statusChip(e.status)}</span>
+        <span class="road-bar"><progress value="${e.children_done}" max="${e.children || 1}" aria-label="Done"></progress><span class="progress">${e.children_done}/${e.children}</span></span>
+        ${e.next ? `<span class="next">&rarr; ${esc(e.next)}</span>` : ""}</button></div>
+      ${open ? stories.map(k => `<button class="row child" data-key="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${mdInline(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("") : ""}</div>`;
+  }).join("") || '<p class="empty">No epics yet.</p>';
+  box.querySelectorAll("[data-key]").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
+  box.querySelectorAll("[data-toggle]").forEach(b => { b.onclick = () => { const k = b.dataset.toggle; openEpics.has(k) ? openEpics.delete(k) : openEpics.add(k); drawRoadmap(box); }; });
 }
 
 // --- Create ---

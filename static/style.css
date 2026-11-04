@@ -130,6 +130,22 @@ body.dragging .board { scroll-snap-type: none; }  /* snapping would fight the sc
 .row .t { flex: 1; overflow-wrap: anywhere; }
 .row.child { padding-left: 26px; }
 .row.grand { padding-left: 48px; }
+.road { border-bottom: 1px solid var(--line); }
+.road.is-done { opacity: .7; }
+.road-head { display: flex; align-items: stretch; }
+.road-toggle { background: none; border: 0; color: var(--quiet); width: 44px; flex: none; cursor: pointer; font-size: 16px; }
+.road-toggle:disabled { opacity: .3; cursor: default; }
+.road-main { flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 10px 4px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+@media (hover: hover) { .road-main:hover { background: var(--hover); } }
+.road-top { display: flex; align-items: center; gap: 8px; }
+.road-top .t { flex: 1; font-weight: 600; overflow-wrap: anywhere; }
+.road-bar { display: flex; align-items: center; gap: 8px; }
+.road-bar progress { flex: 1; max-width: 360px; height: 8px; appearance: none; border: 0; border-radius: 4px; background: var(--lozenge); overflow: hidden; }
+.road-bar progress::-webkit-progress-bar { background: var(--lozenge); }
+.road-bar progress::-webkit-progress-value { background: var(--done); }
+.road-bar progress::-moz-progress-bar { background: var(--done); }
+.road-main .next { font-size: 13px; color: var(--quiet); overflow-wrap: anywhere; }
+.road .row.child { padding-left: 48px; }
 .status { font-size: 12px; font-weight: 500; padding: 0 6px; line-height: 20px; border-radius: 3px; background: var(--lozenge); flex: 0 1 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status.done { background: var(--done-soft); color: var(--done); }
 .status.active { background: var(--accent-soft); color: var(--accent); }

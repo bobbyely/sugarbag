@@ -19,6 +19,7 @@ Or with Docker: see `compose.example.yml`.
 - **Levels:** Epic > Story, Task or Bug > Sub-task. Stories and tasks sit level, so nobody has to decide which contains which. A sub-task gets its own card while it's in a working column, past the first two and not finished, with its parent's name on it.
 - **Issues:** keys such as `ABO-12`, priority, assignee (the owner), a one-line next step such as "Ann tests it on the phone" (shown on the card under the title), labels, start and due dates, Markdown description, comments, history. An issue opens in the middle of the screen (`/#ABO-12`) or as its own page (`/?issue=ABO-12`).
 - **List:** everything, nested, including epics and sub-tasks.
+- **Roadmap:** one row per epic: status, a progress bar with the count of finished stories, and its next step. Tap a row to open the epic; tap the arrow to show its stories. Epics sort by start date if set, then by title ("Stage 2" before "Stage 10"), and finished ones go last. Dates are not needed.
 - **Your view:** hide or show columns for yourself. Light, dark, or following the device. Change your own name.
 - **Cards show age:** days in the current column, turning amber after 14 days in a working column.
 - **Search and filters:** by words, assignee and epic.
