@@ -42,7 +42,7 @@ TYPES = ("epic", "story", "task", "bug", "subtask")
 PRIORITIES = ("highest", "high", "medium", "low", "lowest")
 ROLES = ("admin", "member", "viewer")
 DEFAULT_STATUSES = (("ideas", "Ideas", 0), ("selected", "Selected for development", 0),
-                    ("in_progress", "In progress", 0), ("review", "Review", 0), ("done", "Done", 1))
+                    ("in_progress", "In progress", 0), ("blocked", "Blocked", 0), ("review", "Review", 0), ("done", "Done", 1))
 MAX_BODY = 1_000_000
 SESSION_DAYS = 30
 KEY = re.compile(r"^([A-Z][A-Z0-9]{1,9})-(\d+)$")

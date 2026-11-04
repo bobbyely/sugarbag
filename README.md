@@ -15,7 +15,7 @@ Or with Docker: see `compose.example.yml`.
 
 ## What's in it
 
-- **Board:** starts with Ideas, Selected for development, In progress, Review and Done. Each project can have its own columns. Drag with a mouse. On a phone, rest a finger on a card first, so a swipe still scrolls.
+- **Board:** starts with Ideas, Selected for development, In progress, Blocked, Review and Done. Each project can have its own columns. Drag with a mouse. On a phone, rest a finger on a card first, so a swipe still scrolls.
 - **Levels:** Epic > Story, Task or Bug > Sub-task. Stories and tasks sit level, so nobody has to decide which contains which.
 - **Issues:** keys such as `ABO-12`, priority, assignee, labels, start and due dates, Markdown description, comments, history.
 - **List:** everything, nested, including epics and sub-tasks.
