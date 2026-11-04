@@ -15,10 +15,11 @@ Or with Docker: see `compose.example.yml`.
 
 ## What's in it
 
-- **Board:** starts with Ideas, To do, Selected for development, In progress, Blocked, Review and Done. Each project can have its own columns. Drag with a mouse. On a phone, rest a finger on a card first, so a swipe still scrolls.
+- **Board:** starts with Ideas (the backlog), Selected for development, In progress, Blocked, Review and Done. Each project can have its own columns. Drag with a mouse. On a phone, rest a finger on a card first, so a swipe still scrolls.
 - **Levels:** Epic > Story, Task or Bug > Sub-task. Stories and tasks sit level, so nobody has to decide which contains which.
-- **Issues:** keys such as `ABO-12`, priority, assignee, labels, start and due dates, Markdown description, comments, history.
+- **Issues:** keys such as `ABO-12`, priority, assignee, labels, start and due dates, Markdown description, comments, history. An issue opens in the middle of the screen (`/#ABO-12`) or as its own page (`/?issue=ABO-12`).
 - **List:** everything, nested, including epics and sub-tasks.
+- **Look:** light, dark, or following the device. The choice stays on that device.
 - **Search and filters:** by words, assignee and epic.
 - **Roles:** admin (people, projects, delete anything), member (make and change issues, delete their own), viewer (read only).
 - **API tokens:** for agents and scripts.

@@ -10,8 +10,15 @@ try { Object.assign(state, JSON.parse(localStorage.getItem("sugarbag") || "{}"))
 state.me = null; state.openKey = null;
 
 const remember = () => {
-  try { localStorage.setItem("sugarbag", JSON.stringify({ project: state.project, view: state.view })); } catch { /* as above */ }
+  try { localStorage.setItem("sugarbag", JSON.stringify({ project: state.project, view: state.view, theme: state.theme })); } catch { /* as above */ }
 };
+// Auto follows the phone or computer. The other two stay as chosen, on this device only.
+const THEMES = { auto: "Auto", light: "Light", dark: "Dark" };
+const applyTheme = () => {
+  if (state.theme === "light" || state.theme === "dark") document.documentElement.dataset.theme = state.theme;
+  else delete document.documentElement.dataset.theme;
+};
+applyTheme();
 
 async function api(method, path, body) {
   const res = await fetch(path, { method, headers: body !== undefined || method !== "GET" ? { "Content-Type": "application/json" } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
@@ -47,6 +54,9 @@ const priorityIcon = p => `<svg class="icon pr-${p}" viewBox="0 0 16 16" role="i
 const hash = s => [...s].reduce((n, c) => (n * 31 + c.charCodeAt(0)) >>> 0, 7);
 const avatar = name => name ? `<span class="avatar av${hash(name) % 8}" title="${esc(name)}">${esc(name.slice(0, 2).toUpperCase())}</span>` : '<span class="avatar none" title="Nobody">?</span>';
 const LOGO = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="7" cy="7.5" rx="4.5" ry="3" transform="rotate(-30 7 7.5)" fill="currentColor" opacity=".35"/><ellipse cx="17" cy="7.5" rx="4.5" ry="3" transform="rotate(30 17 7.5)" fill="currentColor" opacity=".35"/><ellipse cx="12" cy="14" rx="5.5" ry="7.5" fill="#e8a317"/><path d="M6.9 11.500h10.200M6.7 15.500h10.6" stroke="#172b4d" stroke-width="2.2"/></svg>';
+const SUN_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg>';
+const GEAR_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.500v2M8 12.500v2M1.5 8h2M12.5 8h2M3.4 3.400l1.4 1.400M11.2 11.200l1.4 1.400M3.4 12.600l1.4-1.400M11.2 4.800l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+const COMMENT_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v8H7l-3 3v-3H2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
 const projectInfo = () => state.projects.find(p => p.key === state.project);
 const statusInfo = slug => projectInfo()?.statuses.find(s => s.slug === slug);
 const today = () => new Date().toLocaleDateString("en-CA");
@@ -96,23 +106,33 @@ async function load() {
 // --- The frame around the board ---
 
 function drawShell() {
-  const options = state.projects.map(p => `<option value="${esc(p.key)}"${p.key === state.project ? " selected" : ""}>${esc(p.name)}</option>`).join("");
+  const options = state.projects.map(p => `<option value="${esc(p.key)}"${p.key === state.project ? " selected" : ""}>${esc(p.name)}</option>`).join("") +
+    (state.me.role === "admin" ? '<option value="+new">+ New project</option>' : "");
   $app.innerHTML = `<div class="top"><span class="brand">${LOGO}<span>${esc(state.name)}</span></span>
       <label class="sr" for="project">Project</label><select class="input" id="project">${options}</select>
       <div class="tabs"><button data-view="board" aria-pressed="${state.view === "board"}">Board</button><button data-view="list" aria-pressed="${state.view === "list"}">List</button></div>
       <span class="spacer"></span>
-      ${canEdit() && state.project ? '<button class="btn primary" id="create">Create</button>' : ""}
-      <button class="btn" id="settings" title="Settings">${esc(state.me.name)}</button></div>
+      ${canEdit() && state.project ? '<button class="btn primary" id="create">+ New ticket</button>' : ""}
+      <button class="btn icon-btn" id="theme" aria-label="Colour theme: ${THEMES[state.theme] || "Auto"}. Tap to change.">${SUN_ICON}<span>${THEMES[state.theme] || "Auto"}</span></button>
+      <button class="btn icon-btn" id="settings">${GEAR_ICON}<span>Settings</span></button></div>
     <div class="filters"><label class="sr" for="q">Search</label><input class="input" id="q" type="search" placeholder="Search" value="${esc(state.q)}">
       <label class="sr" for="who">Assignee</label><select class="input" id="who"></select>
       <label class="sr" for="epic">Epic</label><select class="input" id="epic"></select></div>
     <div id="view"></div>`;
-  document.getElementById("project").onchange = attempt(async e => { state.project = e.target.value; state.epic = ""; remember(); await load(); drawShell(); });
+  document.getElementById("project").onchange = attempt(async e => {
+    if (e.target.value === "+new") { e.target.value = state.project || ""; return openNewProject(); }
+    state.project = e.target.value; state.epic = ""; remember(); await load(); drawShell();
+  });
   $app.querySelectorAll(".tabs button").forEach(b => { b.onclick = () => { state.view = b.dataset.view; boardShown = false; remember(); drawShell(); }; });
   document.getElementById("q").oninput = e => { state.q = e.target.value; drawView(); };
   document.getElementById("who").onchange = e => { state.assignee = e.target.value; drawView(); };
   document.getElementById("epic").onchange = e => { state.epic = e.target.value; drawView(); };
   document.getElementById("settings").onclick = attempt(openSettings);
+  document.getElementById("theme").onclick = () => {
+    const order = Object.keys(THEMES);
+    state.theme = order[(order.indexOf(state.theme || "auto") + 1) % order.length];
+    applyTheme(); remember(); drawShell();
+  };
   const create = document.getElementById("create");
   if (create) create.onclick = () => openCreate();
   drawFilters();
@@ -140,9 +160,9 @@ function drawView() {
   if (!box) return;
   if (!state.project) {
     box.className = "empty";
-    box.innerHTML = state.me.role === "admin" ? '<p>No projects yet.</p><button class="btn primary" id="first">Make one</button>' : "<p>No projects yet. Ask an admin to make one.</p>";
+    box.innerHTML = state.me.role === "admin" ? '<p>No projects yet.</p><button class="btn primary" id="first">+ New project</button>' : "<p>No projects yet. Ask an admin to make one.</p>";
     const first = document.getElementById("first");
-    if (first) first.onclick = attempt(openSettings);
+    if (first) first.onclick = openNewProject;
   } else if (state.view === "list") drawList(box);
   else drawBoard(box);
 }
@@ -157,6 +177,7 @@ function cardHtml(i) {
     <span class="title">${esc(i.title)}</span>${tags ? `<span class="tags">${tags}</span>` : ""}
     <span class="meta">${typeIcon(i.type)}<span>${esc(i.key)}</span>
       ${i.children ? `<span class="progress" title="Sub-tasks done">${i.children_done}/${i.children}</span>` : ""}
+      ${i.comment_count ? `<span class="progress" title="Comments">${COMMENT_ICON}${i.comment_count}</span>` : ""}
       <span class="right">${priorityIcon(i.priority)}${avatar(i.assignee)}</span></span></button>`;
 }
 
@@ -173,7 +194,7 @@ function drawBoard(box) {
     return `<section class="column" data-status="${esc(s.slug)}" aria-label="${esc(s.name)}">
       <header><span>${esc(s.name)}</span><span class="count">${cards.length}</span>${s.is_done ? '<span class="tick" aria-hidden="true">✓</span>' : ""}</header>
       <div class="cards">${cards.map(cardHtml).join("")}</div>
-      ${canEdit() ? '<button class="add-card">+ Create</button>' : ""}</section>`;
+      ${canEdit() ? '<button class="add-card">+ New ticket</button>' : ""}</section>`;
   }).join("");
   box.scrollLeft = scroll;
   // On a phone only one column fits, so open on the first one with work in it.
@@ -311,19 +332,46 @@ function shade(html, center) {
   s.className = "shade" + (center ? " center" : "");
   s.innerHTML = html;
   s.addEventListener("pointerdown", e => { if (e.target === s) s.dataset.close = "1"; });
-  s.addEventListener("click", e => { if (e.target === s && s.dataset.close) closeShade(s); });
+  s.addEventListener("click", e => {
+    const typing = [...s.querySelectorAll("#comment, #bodyedit")].some(t => t.value.trim());
+    // A stray tap outside must not throw away a half-written comment.
+    if (e.target === s && s.dataset.close && !typing) closeShade(s);
+    delete s.dataset.close;
+  });
   document.body.append(s);
   return s;
 }
 function closeShade(s) {
   s.remove();
-  if (s.dataset.item) { state.openKey = null; history.replaceState(null, "", location.pathname); }
+  if (s.dataset.item) { state.openKey = null; wholePage = false; history.replaceState(null, "", location.pathname); }
 }
 addEventListener("keydown", e => { if (e.key === "Escape") { const all = document.querySelectorAll(".shade"); if (all.length) closeShade(all[all.length - 1]); } });
 
+function openNewProject() {
+  const s = shade(`<form class="dialog"><h2>New project</h2><p class="err" hidden></p>
+    <label class="field">Name<input class="input" name="name" maxlength="80" required></label>
+    <label class="field">Key: the short code at the start of its ticket numbers. AB makes AB-1.<input class="input" name="key" maxlength="10" autocapitalize="characters" required></label>
+    <div class="addbar"><button class="btn primary">Make it</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
+  const f = s.querySelector("form");
+  // Suggest a key from the name, until the person types their own.
+  f.name.oninput = () => { if (!f.key.dataset.typed) f.key.value = f.name.value.replace(/[^a-z0-9]/gi, "").slice(0, 3).toUpperCase(); };
+  f.key.oninput = () => { f.key.dataset.typed = "1"; };
+  s.querySelector("#cancel").onclick = () => closeShade(s);
+  f.onsubmit = async e => {
+    e.preventDefault();
+    try {
+      const made = await api("POST", "/api/projects", { key: f.key.value, name: f.name.value });
+      closeShade(s);
+      state.project = made.key; remember();
+      state.projects = await api("GET", "/api/projects"); await load(); drawShell();
+    } catch (err) { const p = f.querySelector(".err"); p.textContent = err.message; p.hidden = false; }
+  };
+  f.name.focus();
+}
+
 function openCreate(preset = {}) {
   const type = preset.type || "task";
-  const s = shade(`<form class="dialog"><h2>Create</h2><p class="err" hidden></p>
+  const s = shade(`<form class="dialog"><h2>New ticket</h2><p class="err" hidden></p>
     <label class="field">Type<select class="input" name="type">${typeOptions(type)}</select></label>
     <label class="field">Title<input class="input" name="title" maxlength="300" required></label>
     <label class="field">Parent<select class="input" name="parent">${parentOptions(type, preset.parent)}</select></label>
@@ -331,7 +379,7 @@ function openCreate(preset = {}) {
     <label class="field">Priority<select class="input" name="priority">${priorityOptions("medium")}</select></label>
     <label class="field">Assignee<select class="input" name="assignee">${userOptions(state.me.name)}</select></label></div>
     <label class="field">Description<textarea class="input" name="body"></textarea></label>
-    <div class="addbar"><button class="btn primary">Create</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
+    <div class="addbar"><button class="btn primary">Make it</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
   const f = s.querySelector("form");
   f.type.onchange = () => { f.parent.innerHTML = parentOptions(f.type.value); };
   s.querySelector("#cancel").onclick = () => closeShade(s);
@@ -356,40 +404,52 @@ async function refresh() {
   if (!activeDrag) drawView();
 }
 
+// An issue opens over the board. Its own page is the same thing filling the screen, at an address that can be saved or sent.
+let wholePage = false;
+
 const openItem = attempt(async key => {
   const item = await api("GET", `/api/items/${encodeURIComponent(key)}`);
-  document.querySelectorAll(".shade[data-item]").forEach(n => n.remove());
+  // A save redraws the issue, so stay at the same place on it.
+  const old = document.querySelector(".shade[data-item]");
+  const scroll = old?.dataset.item === key ? old.scrollTop : 0;
+  old?.remove();
   state.openKey = key;
-  history.replaceState(null, "", "#" + key);
-  drawItem(item);
+  history.replaceState(null, "", wholePage ? `?issue=${encodeURIComponent(key)}` : "#" + key);
+  drawItem(item).scrollTop = scroll;
 });
 
 function drawItem(i) {
   const ro = canEdit() ? "" : " disabled";
-  const s = shade(`<div class="panel" role="dialog" aria-label="${esc(i.key)}">
+  const s = shade(`<div class="panel" role="dialog" aria-modal="true" aria-label="${esc(i.key)} ${esc(i.title)}">
     <div class="panel-top">${typeIcon(i.type)}${i.parent ? `<button class="btn link" data-open="${esc(i.parent)}">${esc(i.parent)}</button> /` : ""}<span>${esc(i.key)}</span>
-      <span class="right">${canEdit() ? '<button class="btn danger" id="del">Delete</button>' : ""}<button class="btn" id="close">Close</button></span></div>
+      <span class="right">${wholePage ? "" : `<a class="btn" href="?issue=${encodeURIComponent(i.key)}">Open as page</a>`}
+        ${canEdit() ? '<button class="btn danger" id="del">Delete</button>' : ""}<button class="btn" id="close">${wholePage ? "Back to board" : "Close"}</button></span></div>
     <label class="sr" for="title">Title</label><textarea class="title-edit" id="title" rows="1" maxlength="300"${ro}>${esc(i.title)}</textarea>
-    <div class="fields">
-      <label class="field">Status<select class="input" data-f="status"${ro}>${statusOptions(i.status)}</select></label>
-      <label class="field">Assignee<select class="input" data-f="assignee"${ro}>${userOptions(i.assignee)}</select></label>
-      <label class="field">Priority<select class="input" data-f="priority"${ro}>${priorityOptions(i.priority)}</select></label>
-      <label class="field">Type<select class="input" data-f="type"${ro}>${typeOptions(i.type)}</select></label>
-      <label class="field">Parent<select class="input" data-f="parent"${ro}>${parentOptions(i.type, i.parent)}</select></label>
-      <label class="field">Labels<input class="input" data-f="labels" value="${esc(i.labels.join(", "))}"${ro} placeholder="comma, separated"></label>
-      <label class="field">Start<input class="input" type="date" data-f="start" value="${esc(i.start)}"${ro}></label>
-      <label class="field">Due<input class="input" type="date" data-f="due" value="${esc(i.due)}"${ro}></label>
+    <div class="item-grid">
+      <aside class="item-side">
+        <label class="field">Status<select class="input" data-f="status"${ro}>${statusOptions(i.status)}</select></label>
+        <label class="field">Assignee<select class="input" data-f="assignee"${ro}>${userOptions(i.assignee)}</select></label>
+        <label class="field">Priority<select class="input" data-f="priority"${ro}>${priorityOptions(i.priority)}</select></label>
+        <label class="field">Type<select class="input" data-f="type"${ro}>${typeOptions(i.type)}</select></label>
+        <label class="field">Parent<select class="input" data-f="parent"${ro}>${parentOptions(i.type, i.parent)}</select></label>
+        <label class="field">Labels<input class="input" data-f="labels" value="${esc(i.labels.join(", "))}"${ro} placeholder="comma, separated"></label>
+        <label class="field">Start<input class="input" type="date" data-f="start" value="${esc(i.start)}"${ro}></label>
+        <label class="field">Due<input class="input" type="date" data-f="due" value="${esc(i.due)}"${ro}></label>
+      </aside>
+      <div class="item-main">
+        <h3 class="section">Description</h3><div id="bodybox"></div>
+        ${i.type === "subtask" ? "" : `<h3 class="section">${i.type === "epic" ? "Issues in this epic" : "Sub-tasks"}${i.children ? ` <span class="quiet">${i.children_done}/${i.children} done</span>` : ""}</h3>
+          <div class="subs">${i.subitems.map(k => `<button class="row" data-open="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${esc(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("")}</div>
+          ${canEdit() ? `<form class="addbar" id="addsub"><label class="sr" for="subtitle">New</label><input class="input" id="subtitle" placeholder="Add ${i.type === "epic" ? "a task" : "a sub-task"}" maxlength="300"><button class="btn">Add</button></form>` : ""}`}
+        <h3 class="section" id="comments">Comments${i.comments.length ? ` <span class="quiet">${i.comments.length}</span>` : ""}</h3>
+        ${canEdit() ? '<form id="addcomment"><label class="sr" for="comment">Add a comment</label><textarea class="input short" id="comment" placeholder="Add a comment"></textarea><div class="addbar"><button class="btn primary">Save</button></div></form>' : ""}
+        <div class="comment-list">${[...i.comments].reverse().map(c => `<div class="comment">${avatar(c.user)}<div><span class="who">${esc(c.user || "Someone")}</span><span class="when">${when(c.at)}</span><div class="body-md">${mdToHtml(c.body)}</div></div></div>`).join("") || '<p class="quiet">None yet.</p>'}</div>
+        <h3 class="section">History</h3>
+        ${i.activity.map(a => `<p class="history"><b>${esc(a.user || "Someone")}</b> changed ${esc(a.field.replace("_id", "").replace("_date", ""))}${a.new !== null && a.field !== "assignee_id" && a.field !== "parent_id" && a.field !== "labels" ? ` to ${esc(a.new)}` : ""}, ${when(a.at)}</p>`).join("") || '<p class="history">Made by ' + esc(i.created_by || "someone") + ", " + when(i.created) + ".</p>"}
+      </div>
     </div>
-    <h3 class="section">Description</h3><div id="bodybox"></div>
-    ${i.type === "subtask" ? "" : `<h3 class="section">${i.type === "epic" ? "Issues in this epic" : "Sub-tasks"}${i.children ? ` <span class="quiet">${i.children_done}/${i.children} done</span>` : ""}</h3>
-      <div>${i.subitems.map(k => `<button class="row" data-open="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${esc(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("")}</div>
-      ${canEdit() ? `<form class="addbar" id="addsub"><label class="sr" for="subtitle">New</label><input class="input" id="subtitle" placeholder="Add ${i.type === "epic" ? "a task" : "a sub-task"}" maxlength="300"><button class="btn">Add</button></form>` : ""}`}
-    <h3 class="section">Comments</h3>
-    <div>${i.comments.map(c => `<div class="comment">${avatar(c.user)}<div><span class="who">${esc(c.user || "Someone")}</span><span class="when">${when(c.at)}</span><div class="body-md">${mdToHtml(c.body)}</div></div></div>`).join("") || '<p class="quiet">None yet.</p>'}</div>
-    ${canEdit() ? '<form id="addcomment"><label class="sr" for="comment">Add a comment</label><textarea class="input" id="comment" placeholder="Add a comment"></textarea><div class="addbar"><button class="btn primary">Save</button></div></form>' : ""}
-    <h3 class="section">History</h3>
-    ${i.activity.map(a => `<p class="history"><b>${esc(a.user || "Someone")}</b> changed ${esc(a.field.replace("_id", "").replace("_date", ""))}${a.new !== null && a.field !== "assignee_id" && a.field !== "parent_id" && a.field !== "labels" ? ` to ${esc(a.new)}` : ""}, ${when(a.at)}</p>`).join("") || '<p class="history">Made by ' + esc(i.created_by || "someone") + ", " + when(i.created) + ".</p>"}
-  </div>`);
+  </div>`, true);
+  if (wholePage) s.classList.add("whole");
   s.dataset.item = i.key;
   s.querySelector("#close").onclick = () => closeShade(s);
   s.querySelectorAll("[data-open]").forEach(b => { b.onclick = () => openItem(b.dataset.open); });
@@ -456,13 +516,23 @@ function drawItem(i) {
     const t = s.querySelector("#comment").value.trim();
     if (!t) return;
     await api("POST", `/api/items/${i.key}/comments`, { body: t });
+    s.querySelector("#comment").value = "";
     await reopen();
   });
+  return s;
 }
 
 function openFromAddress() {
-  const key = location.hash.slice(1);
-  if (/^[A-Z0-9]+-\d+$/.test(key)) openItem(key);
+  const page = new URLSearchParams(location.search).get("issue");
+  const key = page || location.hash.slice(1);
+  if (!/^[A-Z0-9]+-\d+$/.test(key)) return;
+  wholePage = !!page;
+  // The address may name another project's issue, so show that project's board and columns behind it.
+  const project = key.split("-")[0];
+  if (project !== state.project && state.projects.some(p => p.key === project)) {
+    state.project = project;
+    attempt(async () => { await load(); drawShell(); await openItem(key); })();
+  } else openItem(key);
 }
 
 // --- Settings: me, tokens, and for admins, projects and users ---
@@ -470,9 +540,9 @@ function openFromAddress() {
 async function openSettings() {
   const tokens = await api("GET", "/api/tokens");
   const admin = state.me.role === "admin";
-  const s = shade(`<div class="dialog"><h2>${esc(state.me.name)} <span class="quiet">(${esc(state.me.role)})</span></h2>
+  const s = shade(`<div class="dialog"><h2>Settings</h2><p class="quiet">Signed in as ${esc(state.me.name)} (${esc(state.me.role)}).</p>
     ${admin ? `<h3 class="section">Projects</h3>${state.projects.map(p => `<div class="table-row"><b>${esc(p.name)}</b><span class="quiet">${esc(p.key)}</span><button class="btn" data-columns="${esc(p.key)}">Columns</button></div>`).join("")}
-      <form class="addbar" id="addproject"><label class="sr" for="pkey">Key</label><input class="input" id="pkey" placeholder="ABO" maxlength="10" required><label class="sr" for="pname">Name</label><input class="input" id="pname" placeholder="Project name" required><button class="btn">Add</button></form>
+      <div class="addbar"><button class="btn" type="button" id="addproject">+ New project</button></div>
       <h3 class="section">People</h3><div id="people"></div>
       <form class="addbar" id="adduser"><label class="sr" for="uname">Name</label><input class="input" id="uname" placeholder="Name" autocapitalize="none" required><label class="sr" for="upass">Password</label><input class="input" id="upass" type="password" placeholder="Password" autocomplete="new-password" minlength="8" required><label class="sr" for="urole">Role</label><select class="input" id="urole"><option>member</option><option>viewer</option><option>admin</option></select><button class="btn">Add</button></form>` : ""}
     ${canEdit() ? `<h3 class="section">API tokens</h3><p class="quiet">For agents and scripts. A token acts as you.</p><div id="tokens">${tokens.map(t => `<div class="table-row"><b>${esc(t.label)}</b><span class="quiet">${t.last_used ? "used " + when(t.last_used) : "not used yet"}</span><button class="btn danger" data-token="${t.id}">Remove</button></div>`).join("")}</div>
@@ -509,12 +579,7 @@ async function openSettings() {
     await api("POST", "/api/users", { name: s.querySelector("#uname").value, password: s.querySelector("#upass").value, role: s.querySelector("#urole").value });
     await again();
   });
-  s.querySelector("#addproject").onsubmit = attempt(async e => {
-    e.preventDefault();
-    const made = await api("POST", "/api/projects", { key: s.querySelector("#pkey").value, name: s.querySelector("#pname").value });
-    state.project = state.project || made.key; remember();
-    closeShade(s); state.projects = await api("GET", "/api/projects"); await load(); drawShell();
-  });
+  s.querySelector("#addproject").onclick = () => { closeShade(s); openNewProject(); };
 }
 
 // --- Columns: edited as a list, then saved all at once ---
