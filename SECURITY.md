@@ -24,6 +24,7 @@ Sugarbag is for one person or a small team who trust each other enough to share 
 - Text in an issue, comment or name running as script in someone else's browser.
 - Another website making a signed-in browser change the board.
 - Losing or corrupting data through the API.
+- A ticket's old key, from before it moved to another project, leading to a different ticket.
 
 ## Out of scope
 

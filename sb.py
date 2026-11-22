@@ -10,6 +10,7 @@ Settings come from the environment, or from ~/.config/sugarbag/env as KEY=value 
   sb.py show AB-12                    one ticket, with its sub-tasks, comments and history
   sb.py new "Title" --body-file -     make a ticket. Also --type --parent --status --priority --assignee --next --label
   sb.py move AB-12 in_progress        move to a column, by its short name; sb.py columns lists them
+  sb.py move-project AB-12 XY         move to another project, with everything under it. It gets a new key; the old one still works
   sb.py comment AB-12 "What I did"    add a comment. Use - to read it from standard input
   sb.py edit AB-12 --title "New"      change a field. Also --body-file --priority --assignee --next --label --parent --due --start
   sb.py watch AB-12 AB-13             wait until any of these gets a new comment or changes column, print it, and end.
@@ -139,6 +140,12 @@ def do_move(conf, args):
     print(f"{call(conf, 'POST', f'/api/items/{args.key}/move', {'status': args.status})['key']} is now in {args.status}")
 
 
+def do_move_project(conf, args):
+    i = call(conf, "POST", f"/api/items/{args.key}/move-project", {"project": args.to.upper()})
+    under = len(i["moved"]) - 1
+    print(f"{args.key} is now {i['key']}" + (f", with {under} under it" if under else ""))
+
+
 def do_comment(conf, args):
     call(conf, "POST", f"/api/items/{args.key}/comments", {"body": read_text(args.text)})
     print(f"Comment added to {args.key}")
@@ -195,6 +202,10 @@ def main():
     move.add_argument("key")
     move.add_argument("status")
     move.set_defaults(fn=do_move)
+    move_project = sub.add_parser("move-project")
+    move_project.add_argument("key")
+    move_project.add_argument("to", help="the other project's key")
+    move_project.set_defaults(fn=do_move_project)
     watch = sub.add_parser("watch")
     watch.add_argument("keys", nargs="+")
     watch.add_argument("--every", type=float, default=30)

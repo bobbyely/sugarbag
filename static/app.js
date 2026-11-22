@@ -5,6 +5,7 @@ const $app = document.getElementById("app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const TYPE_NAMES = { epic: "Epic", story: "Story", task: "Task", bug: "Bug", subtask: "Sub-task" };
 const PRIORITIES = ["highest", "high", "medium", "low", "lowest"];
+const COLORS = { blue: "Blue", teal: "Teal", green: "Green", yellow: "Yellow", orange: "Orange", red: "Red", pink: "Pink", purple: "Purple" };  // as COLORS in sugarbag.py
 const STALE_DAYS = 14;  // a card this long in one working column is probably stuck
 const state = { me: null, projects: [], project: null, items: [], users: [], view: "board", q: "", assignee: "", epic: "", openKey: null, name: "Sugarbag" };
 try { Object.assign(state, JSON.parse(localStorage.getItem("sugarbag") || "{}")); } catch { /* a private window has no storage; the defaults do */ }
@@ -58,13 +59,26 @@ const LOGO = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse 
 const SUN_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg>';
 const GEAR_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.500v2M8 12.500v2M1.5 8h2M12.5 8h2M3.4 3.400l1.4 1.400M11.2 11.200l1.4 1.400M3.4 12.600l1.4-1.400M11.2 4.800l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 const COLUMNS_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5h3v11H2zM6.5 2.5h3v7h-3zM11 2.5h3v9h-3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+const PROJECTS_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3h11v3h-11zM2.5 10h11v3h-11z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
 const COMMENT_ICON = '<svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v8H7l-3 3v-3H2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
-const projectInfo = () => state.projects.find(p => p.key === state.project);
-const statusInfo = slug => projectInfo()?.statuses.find(s => s.slug === slug);
+const ALL = "*", DONE_ALL = "*done";  // the All projects view, and its one Done column
+const allMode = () => state.project === ALL;
+const projectInfo = (key = state.project) => state.projects.find(p => p.key === key);
+const shownProjects = () => {  // hiding every project would leave nothing, so that shows them all
+  const shown = state.projects.filter(p => !(state.me?.hidden_projects || []).includes(p.key));
+  return shown.length ? shown : state.projects;
+};
+// Looked up for every card on every redraw, so kept in a map that is rebuilt when the projects are fetched again.
+let statusMap = new Map(), statusFrom = null;
+const statusInfo = (slug, project = state.project) => {
+  if (statusFrom !== state.projects) { statusFrom = state.projects; statusMap = new Map(state.projects.flatMap(p => p.statuses.map(s => [`${p.key}/${s.slug}`, s]))); }
+  return statusMap.get(`${project}/${slug}`);
+};
+const st = i => statusInfo(i.status, i.project);
 const today = () => new Date().toLocaleDateString("en-CA");
 const when = t => new Date(t * 1000).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-const statusChip = slug => {
-  const s = statusInfo(slug);
+const statusChip = i => {
+  const s = st(i), slug = i.status;
   // The first column is where work waits, so anything past it and not finished counts as under way.
   const kind = s?.is_done ? "done" : s?.position ? "active" : "";
   return `<span class="status ${kind}">${esc(s?.name || slug)}</span>`;
@@ -95,7 +109,7 @@ async function start() {
   document.title = state.name;
   try { state.me = await api("GET", "/api/me"); } catch { return; }
   [state.projects, state.users] = await Promise.all([api("GET", "/api/projects"), api("GET", "/api/users")]);
-  if (!projectInfo()) state.project = state.projects[0]?.key || null;
+  if (!projectInfo() && !(allMode() && state.projects.length > 1)) state.project = state.projects[0]?.key || null;
   await load();
   drawShell();
   openFromAddress();
@@ -106,14 +120,16 @@ async function load() {
   // The board shows only recently finished work, so it doesn't fetch every old done ticket; the other views get everything.
   const recent = state.view === "board" && state.me?.done_days ? `&done_days=${state.me.done_days}` : "";
   const mine = ++loads;
-  const items = state.project ? await api("GET", `/api/items?project=${encodeURIComponent(state.project)}${recent}`) : [];
+  // All projects asks for the ones this person shows, or for everything when none are hidden.
+  const keys = !allMode() ? state.project : shownProjects().length < state.projects.length ? shownProjects().map(p => p.key).join(",") : "";
+  const items = state.project ? await api("GET", `/api/items?project=${encodeURIComponent(keys)}${recent}`) : [];
   if (mine === loads) state.items = items;  // an older answer arriving late must not replace a newer view's items
 }
 
 // --- The frame around the board ---
 
 function drawShell() {
-  const options = state.projects.map(p => `<option value="${esc(p.key)}"${p.key === state.project ? " selected" : ""}>${esc(p.name)}</option>`).join("") +
+  const options = (state.projects.length > 1 ? `<option value="${ALL}"${allMode() ? " selected" : ""}>All projects</option>` : "") + state.projects.map(p => `<option value="${esc(p.key)}"${p.key === state.project ? " selected" : ""}>${esc(p.name)}</option>`).join("") +
     (state.me.role === "admin" ? '<option value="+new">+ New project</option>' : "");
   $app.innerHTML = `<div class="top"><span class="brand">${LOGO}<span>${esc(state.name)}</span></span>
       <label class="sr" for="project">Project</label><select class="input" id="project">${options}</select>
@@ -125,7 +141,8 @@ function drawShell() {
     <div class="filters"><label class="sr" for="q">Search</label><input class="input" id="q" type="search" placeholder="Search" value="${esc(state.q)}">
       <label class="sr" for="who">Assignee</label><select class="input" id="who"></select>
       <label class="sr" for="epic">Epic</label><select class="input" id="epic"></select>
-      <button class="btn icon-btn" id="columns" aria-label="Show or hide columns">${COLUMNS_ICON}<span>Columns${hiddenColumns().length ? ` (${hiddenColumns().length} hidden)` : ""}</span>${hiddenColumns().length ? `<b class="hide-wide">${hiddenColumns().length}</b>` : ""}</button></div>
+      ${allMode() ? `<button class="btn icon-btn" id="columns" aria-label="Choose projects">${PROJECTS_ICON}<span>Projects${shownProjects().length < state.projects.length ? ` (${shownProjects().length} of ${state.projects.length})` : ""}</span>${shownProjects().length < state.projects.length ? `<b class="hide-wide">${shownProjects().length}</b>` : ""}</button>`
+        : `<button class="btn icon-btn" id="columns" aria-label="Show or hide columns">${COLUMNS_ICON}<span>Columns${hiddenColumns().length ? ` (${hiddenColumns().length} hidden)` : ""}</span>${hiddenColumns().length ? `<b class="hide-wide">${hiddenColumns().length}</b>` : ""}</button>`}</div>
     <div id="view"></div>`;
   document.getElementById("project").onchange = attempt(async e => {
     if (e.target.value === "+new") { e.target.value = state.project || ""; return openNewProject(); }
@@ -136,7 +153,7 @@ function drawShell() {
   document.getElementById("who").onchange = e => { state.assignee = e.target.value; drawView(); };
   document.getElementById("epic").onchange = e => { state.epic = e.target.value; drawView(); };
   document.getElementById("settings").onclick = attempt(openSettings);
-  document.getElementById("columns").onclick = attempt(() => openColumns(state.project));
+  document.getElementById("columns").onclick = attempt(() => allMode() ? openProjects() : openColumns(state.project));
   document.getElementById("theme").onclick = () => {
     const order = Object.keys(THEMES);
     state.theme = order[(order.indexOf(state.theme || "auto") + 1) % order.length];
@@ -160,7 +177,7 @@ function drawFilters() {
   who.innerHTML = `<option value="">Anyone</option><option value="-"${state.assignee === "-" ? " selected" : ""}>Nobody</option>` +
     state.users.filter(u => u.active).map(u => `<option value="${esc(u.name)}"${u.name === state.assignee ? " selected" : ""}>${esc(u.name)}</option>`).join("");
   epic.innerHTML = '<option value="">All epics</option>' +
-    state.items.filter(i => i.type === "epic").map(i => `<option value="${esc(i.key)}"${i.key === state.epic ? " selected" : ""}>${esc(i.title)}</option>`).join("");
+    state.items.filter(i => i.type === "epic").map(i => `<option value="${esc(i.key)}"${i.key === state.epic ? " selected" : ""}>${allMode() ? esc(i.project) + ": " : ""}${esc(i.title)}</option>`).join("");
 }
 
 function matches(i) {
@@ -188,14 +205,14 @@ function drawView() {
 // --- The board ---
 
 function cardHtml(i) {
-  const overdue = i.due && i.due < today() && !statusInfo(i.status)?.is_done;
+  const s = st(i);
+  const overdue = i.due && i.due < today() && !s?.is_done;
   // Finished work has no clock. Ideas can wait for ever, so only later columns turn amber.
-  const s = statusInfo(i.status);
   const days = Math.floor((Date.now() / 1000 - (i.status_since || i.created)) / 86400);
   const age = !s?.is_done && days >= 1 ? `<span class="age${s?.position && days >= STALE_DAYS ? " stale" : ""}" title="${days} day${days === 1 ? "" : "s"} in this column">${days}d</span>` : "";
   const tags = (i.parent ? `<span class="lozenge${i.parent_type === "epic" ? " epic" : " parent"}">${esc(i.parent_title)}</span>` : "") +
     i.labels.map(l => `<span class="lozenge">${esc(l)}</span>`).join("") + (overdue ? `<span class="lozenge overdue">Due ${esc(new Date(i.due + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short" }))}</span>` : "");
-  return `<button class="card${statusInfo(i.status)?.is_done ? " is-done" : ""}" data-key="${esc(i.key)}">
+  return `<button class="card${s?.is_done ? " is-done" : ""}" data-key="${esc(i.key)}">
     <span class="title">${mdInline(i.title)}</span>${i.next ? `<span class="next" title="Next step">&rarr; ${esc(i.next)}</span>` : ""}${tags ? `<span class="tags">${tags}</span>` : ""}
     <span class="meta">${typeIcon(i.type)}<span>${esc(i.key)}</span>
       ${i.children ? `<span class="progress" title="Sub-tasks done">${i.children_done}/${i.children}</span>` : ""}
@@ -203,28 +220,54 @@ function cardHtml(i) {
       <span class="right">${age}${i.priority === "medium" ? "" : priorityIcon(i.priority)}${avatar(i.assignee)}</span></span></button>`;
 }
 
-const hiddenColumns = () => state.me?.hidden?.[state.project] || [];
+const hiddenColumns = (key = state.project) => state.me?.hidden?.[key] || [];
 // An epic is a theme, so it never gets a card. A sub-task gets one only while it's being worked on: its parent waits in
 // its column and the step moves across. Waiting and finished steps stay inside their parent, or they'd swamp the board.
 const onBoard = i => {
   if (i.type === "epic" || !matches(i)) return false;
   if (i.type !== "subtask") return true;
-  const s = statusInfo(i.status);
+  const s = st(i);
   return !!s && s.position >= 2 && !s.is_done;
 };
 
 let boardShown = false;
 
+// The All projects board. Projects can have different columns, so: each project's columns in its own order, merged by
+// short name (slug), which lines up the usual columns; a column only some projects have sits after the one before it in
+// those projects. Every done column, whatever its name, becomes one Done at the end. parts lists [project, slug] pairs.
+function allColumns() {
+  const cols = [], done = { slug: DONE_ALL, name: "Done", is_done: 1, count: 0, color: null, parts: [] };
+  for (const p of shownProjects()) {
+    let at = 0;
+    for (const s of p.statuses) {
+      if (s.is_done) { done.count += s.count; done.color ||= s.color; done.parts.push([p.key, s.slug]); continue; }
+      let n = cols.findIndex(c => c.slug === s.slug);
+      if (n < 0) { n = at; cols.splice(n, 0, { ...s, count: 0, parts: [] }); }
+      cols[n].count += s.count; cols[n].color ||= s.color; cols[n].parts.push([p.key, s.slug]);
+      at = n + 1;
+    }
+  }
+  return done.parts.length ? [...cols, done] : cols;
+}
+// Which board column a card sits in: its own, or in All projects the merged one.
+const columnOf = i => allMode() && st(i)?.is_done ? DONE_ALL : i.status;
+// The real column a project has behind a board column: in All projects, from the merged column's own list, since the
+// same short name can be done in one project and not in another.
+const statusFor = (column, project) => !allMode() ? column : allColumns().find(c => c.slug === column)?.parts.find(([k]) => k === project)?.[1];
+
 function drawBoard(box) {
   const scroll = box.scrollLeft;
   box.className = "board";
-  const hidden = hiddenColumns();
-  box.innerHTML = projectInfo().statuses.filter(s => !hidden.includes(s.slug)).map(s => {
-    const cards = state.items.filter(i => i.status === s.slug && onBoard(i)).sort((a, b) => a.position - b.position);
-    return `<section class="column" data-status="${esc(s.slug)}" aria-label="${esc(s.name)}">
+  // All projects: a column is hidden only if every project in it hides it, and a card is hidden if its own column is.
+  const columns = allMode() ? allColumns().filter(c => !c.parts.every(([k, slug]) => hiddenColumns(k).includes(slug)))
+    : projectInfo().statuses.filter(s => !hiddenColumns().includes(s.slug));
+  const showing = i => onBoard(i) && (!allMode() || !hiddenColumns(i.project).includes(i.status));
+  box.innerHTML = columns.map(s => {
+    const cards = state.items.filter(i => columnOf(i) === s.slug && showing(i)).sort((a, b) => a.position - b.position);
+    return `<section class="column${COLORS[s.color] ? ` tinted tint-${s.color}` : ""}" data-status="${esc(s.slug)}" aria-label="${esc(s.name)}">
       <header><span>${esc(s.name)}</span><span class="count">${cards.length}</span>${s.is_done ? '<span class="tick" aria-hidden="true">✓</span>' : ""}</header>
       <div class="cards">${cards.map(cardHtml).join("")}</div>
-      ${s.is_done && s.count > state.items.filter(i => i.status === s.slug).length ? `<button class="add-card all-done" data-done="${esc(s.slug)}">Show all ${s.count} done</button>` : ""}
+      ${s.is_done && s.count > state.items.filter(i => columnOf(i) === s.slug).length ? `<button class="add-card all-done" data-done="${esc(s.slug)}">Show all ${s.count} done</button>` : ""}
       ${canEdit() ? '<button class="add-card">+ New ticket</button>' : ""}</section>`;
   }).join("");
   box.scrollLeft = scroll;
@@ -318,13 +361,18 @@ function endDrag(d) {
 function cancelDrag(d) { d.place.remove(); endDrag(d); }
 
 async function finishDrag(d) {
-  const before = d.place.nextElementSibling?.dataset?.key || null;
-  const status = d.place.closest(".column").dataset.status;
-  const key = d.card.dataset.key;
+  const keyed = new Map(state.items.map(i => [i.key, i])), byKey = k => keyed.get(k);
+  const item = byKey(d.card.dataset.key), column = d.place.closest(".column").dataset.status;
+  // In All projects a column holds several projects' cards: Done means this project's first done column, and the card
+  // goes above the next card of its own project and column, since the server only places it among those.
+  const status = statusFor(column, item.project);
+  let next = d.place.nextElementSibling;
+  while (next && (byKey(next.dataset.key)?.project !== item.project || byKey(next.dataset.key)?.status !== status)) next = next.nextElementSibling;
   d.place.replaceWith(d.card);
   endDrag(d);
   try {
-    await api("POST", `/api/items/${key}/move`, { status, before });
+    if (!status) throw new Error(`${item.project} has no ${d.card.closest(".column")?.getAttribute("aria-label") || "such"} column.`);
+    await api("POST", `/api/items/${item.key}/move`, { status, before: next?.dataset.key || null });
   } catch (e) { toast(e.message); }
   await load();
   drawView();
@@ -332,10 +380,17 @@ async function finishDrag(d) {
 
 // --- The list: everything, nested, including what the board leaves out ---
 
+// Each item's children by key, so drawing thousands of rows doesn't search the whole list for every one.
+function childrenOf() {
+  const kids = new Map();
+  for (const i of state.items) if (i.parent) (kids.get(i.parent) || kids.set(i.parent, []).get(i.parent)).push(i);
+  return kids;
+}
+
 // Everything in one done column, most recently finished first: where "Show all done" on the board leads.
 function drawDoneList(box) {
-  const s = statusInfo(state.doneColumn);
-  const rows = state.items.filter(i => i.status === state.doneColumn && matches(i)).sort((a, b) => (b.finished || 0) - (a.finished || 0));
+  const s = allMode() ? { name: "Done" } : statusInfo(state.doneColumn);
+  const rows = state.items.filter(i => columnOf(i) === state.doneColumn && matches(i)).sort((a, b) => (b.finished || 0) - (a.finished || 0));
   const day = t => t ? new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "";
   box.innerHTML = `<div class="done-head"><button class="btn" id="backboard">&larr; Back to board</button><h2>${esc(s?.name || state.doneColumn)}: all ${rows.length}, newest first</h2></div>` +
     (rows.map(i => `<button class="row" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span><span class="t">${mdInline(i.title)}</span><span class="tl-note">${esc(day(i.finished))}</span>${avatar(i.assignee)}</button>`).join("") || '<p class="empty">Nothing here.</p>');
@@ -345,16 +400,16 @@ function drawDoneList(box) {
 
 function drawList(box) {
   box.className = "list";
-  if (state.doneColumn && statusInfo(state.doneColumn)) return drawDoneList(box);
-  const rows = [];
+  if (state.doneColumn && (allMode() ? state.doneColumn === DONE_ALL : statusInfo(state.doneColumn))) return drawDoneList(box);
+  const rows = [], kids = childrenOf();
   const add = (i, depth) => {
     rows.push(`<button class="row ${depth === 1 ? "child" : depth === 2 ? "grand" : ""}" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span>
-      <span class="t">${mdInline(i.title)}</span>${statusChip(i.status)}${priorityIcon(i.priority)}${avatar(i.assignee)}</button>`);
-    state.items.filter(k => k.parent === i.key).sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true })).forEach(k => { if (matches(k) || state.q) add(k, depth + 1); });
+      <span class="t">${mdInline(i.title)}</span>${statusChip(i)}${priorityIcon(i.priority)}${avatar(i.assignee)}</button>`);
+    (kids.get(i.key) || []).sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true })).forEach(k => { if (matches(k) || state.q) add(k, depth + 1); });
   };
   // Anything whose parent is hidden still shows, at the top level.
-  const shown = state.items.filter(matches);
-  shown.filter(i => !i.parent || !shown.some(p => p.key === i.parent)).sort((a, b) => (a.type === "epic" ? 0 : 1) - (b.type === "epic" ? 0 : 1) || a.key.localeCompare(b.key, undefined, { numeric: true })).forEach(i => add(i, 0));
+  const shown = state.items.filter(matches), shownKeys = new Set(shown.map(i => i.key));
+  shown.filter(i => !i.parent || !shownKeys.has(i.parent)).sort((a, b) => (a.type === "epic" ? 0 : 1) - (b.type === "epic" ? 0 : 1) || a.key.localeCompare(b.key, undefined, { numeric: true })).forEach(i => add(i, 0));
   box.innerHTML = rows.join("") || '<p class="empty">Nothing here.</p>';
   box.querySelectorAll(".row").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
 }
@@ -367,11 +422,11 @@ const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true });
 function drawRoadmap(box) {
   box.className = "list";
   // No ticket needs a date, so undated epics sort after dated ones, by title with numbers in order ("Stage 2" before "Stage 10").
-  const isDone = i => !!statusInfo(i.status)?.is_done;
-  const filtering = !!(state.q.trim() || state.assignee);
+  const isDone = i => !!st(i)?.is_done;
+  const filtering = !!(state.q.trim() || state.assignee), kids = childrenOf();
   // An epic shows if it or any of its stories match, so a search for a story's title finds its epic.
   const rows = state.items.filter(i => i.type === "epic").map(e => {
-    const stories = state.items.filter(k => k.parent === e.key).sort((a, b) => natural(a.key, b.key));
+    const stories = (kids.get(e.key) || []).sort((a, b) => natural(a.key, b.key));
     return { e, stories, hits: stories.filter(matches) };
   }).filter(r => matches(r.e) || r.hits.length).sort((x, y) => {
     const a = x.e, b = y.e;
@@ -382,10 +437,10 @@ function drawRoadmap(box) {
     const open = openEpics.has(e.key) !== (filtering && hits.length > 0), shown = filtering ? hits : stories;
     return `<div class="road${isDone(e) ? " is-done" : ""}"><div class="road-head">
       <button class="road-toggle" data-toggle="${esc(e.key)}" aria-expanded="${open}" aria-label="${open ? "Hide" : "Show"} stories of ${esc(e.title)}"${stories.length ? "" : " disabled"}>${open ? "&#9662;" : "&#9656;"}</button>
-      <button class="road-main" data-key="${esc(e.key)}"><span class="road-top">${typeIcon("epic")}<span class="t">${mdInline(e.title)}</span>${statusChip(e.status)}</span>
+      <button class="road-main" data-key="${esc(e.key)}"><span class="road-top">${typeIcon("epic")}${allMode() ? `<span class="key">${esc(e.key)}</span>` : ""}<span class="t">${mdInline(e.title)}</span>${statusChip(e)}</span>
         <span class="road-bar"><progress value="${e.children_done}" max="${e.children || 1}" aria-label="Done"></progress><span class="progress">${e.children_done}/${e.children}</span></span>
         ${e.next ? `<span class="next">&rarr; ${esc(e.next)}</span>` : ""}</button></div>
-      ${open ? shown.map(k => `<button class="row child" data-key="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${mdInline(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("") : ""}</div>`;
+      ${open ? shown.map(k => `<button class="row child" data-key="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${mdInline(k.title)}</span>${statusChip(k)}${avatar(k.assignee)}</button>`).join("") : ""}</div>`;
   }).join("") || '<p class="empty">No epics yet.</p>';
   box.querySelectorAll("[data-key]").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
   box.querySelectorAll("[data-toggle]").forEach(b => {
@@ -407,13 +462,13 @@ const dayText = d => new Date(d + "T12:00").toLocaleDateString(undefined, { day:
 
 function drawTimeline(box) {
   box.className = "list";
-  const isDone = i => !!statusInfo(i.status)?.is_done;
+  const isDone = i => !!st(i)?.is_done;
   const dated = i => !!(i.start || i.due);
-  const epics = state.items.filter(i => i.type === "epic");
-  const kids = e => state.items.filter(k => k.parent === e.key && k.type !== "subtask").sort((a, b) => natural(a.key, b.key));
+  const epics = state.items.filter(i => i.type === "epic"), epicKeys = new Set(epics.map(e => e.key)), children = childrenOf();
+  const kids = e => (children.get(e.key) || []).filter(k => k.type !== "subtask").sort((a, b) => natural(a.key, b.key));
   const groups = epics.map(e => ({ e, hits: kids(e).filter(matches) })).filter(g => matches(g.e) || g.hits.length);
   // Work with no epic above it still belongs on the chart.
-  const loose = state.items.filter(i => i.type !== "epic" && i.type !== "subtask" && !epics.some(e => e.key === i.parent) && matches(i));
+  const loose = state.items.filter(i => i.type !== "epic" && i.type !== "subtask" && !epicKeys.has(i.parent) && matches(i));
   if (loose.length) groups.push({ e: null, hits: loose });
   const rowsOf = g => (g.e && matches(g.e) ? [g.e] : []).concat(g.hits);
   const all = groups.flatMap(rowsOf);
@@ -427,7 +482,7 @@ function drawTimeline(box) {
   // The axis fits what is drawn: dated rows inside the window, plus an epic heading whose own dates are inside it.
   const drawn = shownGroups.flatMap(g => [g.e, ...g.hits.filter(dated)].filter(i => i && dated(i) && inWindow(i)));
   const days = drawn.flatMap(i => [i.start, i.due].filter(Boolean)).map(dayNumber);
-  const listRow = (i, note) => `<button class="row" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span><span class="t">${mdInline(i.title)}</span>${note ? `<span class="tl-note">${esc(note)}</span>` : ""}${statusChip(i.status)}</button>`;
+  const listRow = (i, note) => `<button class="row" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span><span class="t">${mdInline(i.title)}</span>${note ? `<span class="tl-note">${esc(note)}</span>` : ""}${statusChip(i)}</button>`;
   const noDates = (undated.length ? `<details class="tl-undated"${days.length ? "" : " open"}><summary>No dates (${undated.length})</summary>${undated.map(i => listRow(i)).join("")}</details>` : "") +
     (outside.length ? `<details class="tl-undated" open><summary>Too far from today to draw (${outside.length})</summary>${outside.map(i => listRow(i, [i.start, i.due].filter(Boolean).map(dayText).join(" to "))).join("")}</details>` : "");
   if (!days.length) {
@@ -448,15 +503,15 @@ function drawTimeline(box) {
     // The server allows a start after the due date, so draw from the earlier day and say so.
     const flip = i.start && i.due && i.start > i.due, [a, z] = flip ? [i.due, i.start] : [i.start, i.due];
     const range = a && z ? `${dayText(a)} to ${dayText(z)}${flip ? " (dates reversed)" : ""}` : i.start ? `starts ${dayText(i.start)}` : i.due ? `due ${dayText(i.due)}` : "no dates";
-    const here = dated(i) && inWindow(i), statusName = statusInfo(i.status)?.name || i.status;
+    const here = dated(i) && inWindow(i), statusName = st(i)?.name || i.status;
     const late = i.due && i.due < today() && !isDone(i);
-    const kind = isDone(i) ? "done" : statusInfo(i.status)?.position ? "active" : "wait";
+    const kind = isDone(i) ? "done" : st(i)?.position ? "active" : "wait";
     const mark = !here ? "" : a && z
       ? `<span class="tl-bar ${kind}${late ? " late" : ""}" data-from="${dayNumber(a) - from}" data-len="${dayNumber(z) - dayNumber(a) + 1}"></span>`
       : `<span class="tl-dot ${kind}${late ? " late" : ""}" data-from="${dayNumber(i.start || i.due) - from}"></span>`;
     const label = here ? `<span class="tl-when" data-from="${dayNumber(z || a) - from + 1}">${esc(statusName)}, ${esc(range)}</span>` : "";
-    return `<button class="tl-row${head ? " head" : ""}${isDone(i) ? " is-done" : ""}" data-key="${esc(i.key)}" aria-label="${esc(i.key)} ${esc(i.title)}, ${esc(statusInfo(i.status)?.name || i.status)}, ${esc(range)}${late ? ", overdue" : ""}">
-      <span class="tl-name">${typeIcon(i.type)}<span class="t">${mdInline(i.title)}</span></span><span class="tl-track">${mark}${label}</span></button>`;
+    return `<button class="tl-row${head ? " head" : ""}${isDone(i) ? " is-done" : ""}" data-key="${esc(i.key)}" aria-label="${esc(i.key)} ${esc(i.title)}, ${esc(statusName)}, ${esc(range)}${late ? ", overdue" : ""}">
+      <span class="tl-name">${typeIcon(i.type)}${allMode() ? `<span class="key">${esc(i.project)}</span>` : ""}<span class="t">${mdInline(i.title)}</span></span><span class="tl-track">${mark}${label}</span></button>`;
   };
   const body = shownGroups.map(g => {
     const title = g.e ? "" : '<div class="tl-loose">No epic</div>';
@@ -482,13 +537,13 @@ function drawTimeline(box) {
 
 // --- Create ---
 
-function parentOptions(type, current) {
+function parentOptions(type, current, project = state.project) {
   const wanted = type === "subtask" ? ["story", "task", "bug"] : type === "epic" ? [] : ["epic"];
-  return `<option value="">None</option>` + state.items.filter(i => wanted.includes(i.type))
+  return `<option value="">None</option>` + state.items.filter(i => wanted.includes(i.type) && i.project === project)
     .map(i => `<option value="${esc(i.key)}"${i.key === current ? " selected" : ""}>${esc(i.key)} ${esc(i.title)}</option>`).join("");
 }
 const typeOptions = cur => Object.entries(TYPE_NAMES).map(([k, v]) => `<option value="${k}"${k === cur ? " selected" : ""}>${v}</option>`).join("");
-const statusOptions = cur => projectInfo().statuses.map(s => `<option value="${esc(s.slug)}"${s.slug === cur ? " selected" : ""}>${esc(s.name)}</option>`).join("");
+const statusOptions = (cur, project = state.project) => projectInfo(project).statuses.map(s => `<option value="${esc(s.slug)}"${s.slug === cur ? " selected" : ""}>${esc(s.name)}</option>`).join("");
 const priorityOptions = cur => PRIORITIES.map(p => `<option value="${p}"${p === cur ? " selected" : ""}>${p[0].toUpperCase() + p.slice(1)}</option>`).join("");
 const userOptions = cur => '<option value="">Nobody</option>' + state.users.filter(u => u.active || u.name === cur).map(u => `<option value="${esc(u.name)}"${u.name === cur ? " selected" : ""}>${esc(u.name)}</option>`).join("");
 
@@ -536,22 +591,32 @@ function openNewProject() {
 
 function openCreate(preset = {}) {
   const type = preset.type || "task";
+  // All projects: the ticket needs a project first, and the parents and columns on offer follow it. A board column there
+  // may be the merged Done, or one only some projects have, so start with a project that has it.
+  const want = preset.status, statusIn = key => want && statusFor(want, key);
+  let project = allMode() ? (shownProjects().find(p => statusInfo(statusIn(p.key), p.key)) || shownProjects()[0]).key : state.project;
   const s = shade(`<form class="dialog"><h2>New ticket</h2><p class="err" hidden></p>
+    ${allMode() ? `<label class="field">Project<select class="input" name="project">${shownProjects().map(p => `<option value="${esc(p.key)}"${p.key === project ? " selected" : ""}>${esc(p.name)} (${esc(p.key)})</option>`).join("")}</select></label>` : ""}
     <label class="field">Type<select class="input" name="type">${typeOptions(type)}</select></label>
     <label class="field">Title<input class="input" name="title" maxlength="300" required></label>
-    <label class="field">Parent<select class="input" name="parent">${parentOptions(type, preset.parent)}</select></label>
-    <div class="fields"><label class="field">Status<select class="input" name="status">${statusOptions(preset.status)}</select></label>
+    <label class="field">Parent<select class="input" name="parent">${parentOptions(type, preset.parent, project)}</select></label>
+    <div class="fields"><label class="field">Status<select class="input" name="status">${statusOptions(statusIn(project), project)}</select></label>
     <label class="field">Priority<select class="input" name="priority">${priorityOptions("medium")}</select></label>
     <label class="field">Assignee<select class="input" name="assignee">${userOptions(state.me.name)}</select></label></div>
     <label class="field">Description<textarea class="input" name="body"></textarea></label>
     <div class="addbar"><button class="btn primary">Create ticket</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
   const f = s.querySelector("form");
-  f.type.onchange = () => { f.parent.innerHTML = parentOptions(f.type.value); };
+  f.type.onchange = () => { f.parent.innerHTML = parentOptions(f.type.value, "", project); };
+  if (f.project) f.project.onchange = () => {
+    project = f.project.value;
+    f.parent.innerHTML = parentOptions(f.type.value, "", project);
+    f.status.innerHTML = statusOptions(want ? statusIn(project) : f.status.value, project);
+  };
   s.querySelector("#cancel").onclick = () => closeShade(s);
   f.onsubmit = async e => {
     e.preventDefault();
     try {
-      await api("POST", "/api/items", { project: state.project, type: f.type.value, title: f.title.value, parent: f.parent.value || null, status: f.status.value,
+      await api("POST", "/api/items", { project, type: f.type.value, title: f.title.value, parent: f.parent.value || null, status: f.status.value,
         priority: f.priority.value, assignee: f.assignee.value || null, body: f.body.value });
       closeShade(s);
       await refresh();
@@ -572,8 +637,10 @@ async function refresh() {
 // An issue opens over the board. Its own page is the same thing filling the screen, at an address that can be saved or sent.
 let wholePage = false;
 
-const openItem = attempt(async key => {
-  const item = await api("GET", `/api/items/${encodeURIComponent(key)}`);
+const openItem = attempt(async asked => {
+  const item = await api("GET", `/api/items/${encodeURIComponent(asked)}`), key = item.key;  // an old key answers with the new one
+  // The address may name another project's issue, so show that project's board and columns behind it.
+  if (!allMode() && item.project !== state.project) { state.project = item.project; state.epic = ""; await load(); drawShell(); }
   // A save redraws the issue, so stay at the same place on it.
   const old = document.querySelector(".shade[data-item]");
   const scroll = old?.dataset.item === key ? old.scrollTop : 0;
@@ -592,13 +659,13 @@ function drawItem(i) {
     <label class="sr" for="title">Title</label><textarea class="title-edit" id="title" rows="1" maxlength="300"${ro}>${esc(i.title)}</textarea>
     <div class="item-grid">
       <aside class="item-side">
-        <div class="key-fields"><label class="field">Status<select class="input" data-f="status"${ro}>${statusOptions(i.status)}</select></label>
+        <div class="key-fields"><label class="field">Status<select class="input" data-f="status"${ro}>${statusOptions(i.status, i.project)}</select></label>
         <label class="field">Assignee<select class="input" data-f="assignee"${ro}>${userOptions(i.assignee)}</select></label>
         <label class="field wide">Next step<input class="input" data-f="next" maxlength="200" value="${esc(i.next)}"${ro} placeholder="Who does what next"></label></div>
         <details class="more"${innerWidth > 700 ? " open" : ""}><summary>More details</summary><div class="more-fields">
         <label class="field">Priority<select class="input" data-f="priority"${ro}>${priorityOptions(i.priority)}</select></label>
         <label class="field">Type<select class="input" data-f="type"${ro}>${typeOptions(i.type)}</select></label>
-        <label class="field">Parent<select class="input" data-f="parent"${ro}>${parentOptions(i.type, i.parent)}</select></label>
+        <label class="field">Parent<select class="input" data-f="parent"${ro}>${parentOptions(i.type, i.parent, i.project)}</select></label>
         <label class="field">Labels<input class="input" data-f="labels" value="${esc(i.labels.join(", "))}"${ro} placeholder="comma, separated"></label>
         <label class="field">Start<input class="input" type="date" data-f="start" value="${esc(i.start)}"${ro}></label>
         <label class="field">Due<input class="input" type="date" data-f="due" value="${esc(i.due)}"${ro}></label></div></details>
@@ -606,14 +673,14 @@ function drawItem(i) {
       <div class="item-main">
         <h3 class="section">Description</h3><div id="bodybox"></div>
         ${i.type === "subtask" ? "" : `<h3 class="section">${i.type === "epic" ? "Issues in this epic" : "Sub-tasks"}${i.children ? ` <span class="quiet">${i.children_done}/${i.children} done</span>` : ""}</h3>
-          <div class="subs">${i.subitems.map(k => `<button class="row" data-open="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${mdInline(k.title)}</span>${statusChip(k.status)}${avatar(k.assignee)}</button>`).join("")}</div>
+          <div class="subs">${i.subitems.map(k => `<button class="row" data-open="${esc(k.key)}">${typeIcon(k.type)}<span class="key">${esc(k.key)}</span><span class="t">${mdInline(k.title)}</span>${statusChip(k)}${avatar(k.assignee)}</button>`).join("")}</div>
           ${canEdit() ? `<form class="addbar" id="addsub"><label class="sr" for="subtitle">New</label><input class="input" id="subtitle" placeholder="Add ${i.type === "epic" ? "a task" : "a sub-task"}" maxlength="300"><button class="btn">Add</button></form>` : ""}`}
         <h3 class="section" id="comments">Comments${i.comments.length ? ` <span class="quiet">${i.comments.length}</span>` : ""}</h3>
         ${canEdit() ? '<form id="addcomment"><label class="sr" for="comment">Add a comment</label><textarea class="input short" id="comment" placeholder="Add a comment"></textarea><div class="addbar"><button class="btn primary">Save</button></div></form>' : ""}
         <div class="comment-list">${[...i.comments].reverse().map(c => `<div class="comment">${avatar(c.user)}<div><span class="who">${esc(c.user || "Someone")}</span><span class="when">${when(c.at)}</span><div class="body-md">${mdToHtml(c.body)}</div></div></div>`).join("") || '<p class="quiet">None yet.</p>'}</div>
         <h3 class="section">History</h3>
-        ${i.activity.map(a => `<p class="history"><b>${esc(a.user || "Someone")}</b> changed ${esc(a.field.replace("_id", "").replace("_date", ""))}${a.new !== null && a.field !== "assignee_id" && a.field !== "parent_id" && a.field !== "labels" ? ` to ${esc(a.new)}` : ""}, ${when(a.at)}</p>`).join("") || '<p class="history">Made by ' + esc(i.created_by || "someone") + ", " + when(i.created) + ".</p>"}
-        ${canEdit() ? `<div class="danger-row"><button class="btn danger" id="del">Delete ticket</button></div>` : ""}
+        ${i.activity.map(a => a.field === "project" ? `<p class="history"><b>${esc(a.user || "Someone")}</b> moved it from ${esc(a.old)} to ${esc(a.new)}, ${when(a.at)}</p>` : `<p class="history"><b>${esc(a.user || "Someone")}</b> changed ${esc(a.field.replace("_id", "").replace("_date", ""))}${a.new !== null && a.field !== "assignee_id" && a.field !== "parent_id" && a.field !== "labels" ? ` to ${esc(a.new)}` : ""}, ${when(a.at)}</p>`).join("") || '<p class="history">Made by ' + esc(i.created_by || "someone") + ", " + when(i.created) + ".</p>"}
+        ${canEdit() ? `<div class="danger-row">${i.type !== "subtask" && state.projects.length > 1 ? '<button class="btn" id="moveproject">Move to project…</button>' : ""}<button class="btn danger" id="del">Delete ticket</button></div>` : ""}
       </div>
     </div>
   </div>`, true);
@@ -643,11 +710,13 @@ function drawItem(i) {
   typeField.onchange = () => {
     const kind = typeField.value;
     const keep = kind !== "epic" && kind !== "subtask" && i.parent_type === "epic";
-    parentField.innerHTML = parentOptions(kind, keep ? i.parent : "");
+    parentField.innerHTML = parentOptions(kind, keep ? i.parent : "", i.project);
     if (kind === "subtask") return toast("Now pick the story, task or bug it belongs to.");
     save({ type: kind, parent: keep ? i.parent : null });
   };
   parentField.onchange = () => save({ type: typeField.value, parent: parentField.value || null });
+  const moveProject = s.querySelector("#moveproject");
+  if (moveProject) moveProject.onclick = () => openMoveProject(i);
   const del = s.querySelector("#del");
   if (del) del.onclick = attempt(async () => {
     if (!confirm(`Delete ${i.key}${i.children ? ` and the ${i.children} under it` : ""}? This can't be undone.`)) return;
@@ -674,7 +743,7 @@ function drawItem(i) {
     e.preventDefault();
     const t = s.querySelector("#subtitle").value.trim();
     if (!t) return;
-    await api("POST", "/api/items", { project: i.project, type: i.type === "epic" ? "task" : "subtask", title: t, parent: i.key, status: statusInfo(i.status)?.is_done ? undefined : i.status });
+    await api("POST", "/api/items", { project: i.project, type: i.type === "epic" ? "task" : "subtask", title: t, parent: i.key, status: st(i)?.is_done ? undefined : i.status });
     await reopen();
   });
   const add = s.querySelector("#addcomment");
@@ -689,17 +758,37 @@ function drawItem(i) {
   return s;
 }
 
+// A sub-task never gets here: it moves with its parent.
+function openMoveProject(i) {
+  const s = shade(`<form class="dialog"><h2>Move ${esc(i.key)} to another project</h2><p class="err" hidden></p>
+    <label class="field">Project<select class="input" name="to">${state.projects.filter(p => p.key !== i.project).map(p => `<option value="${esc(p.key)}">${esc(p.name)} (${esc(p.key)})</option>`).join("")}</select></label>
+    <ul class="move-notes"><li>It gets a new key there. ${esc(i.key)} keeps working and leads to it.</li>
+      <li>Its comments, history and labels come too${i.children ? ", and so does everything under it" : ""}.</li>
+      <li>It keeps its column if the project has a matching one (the same short name). Otherwise it starts in the first column.</li>
+      ${i.parent ? `<li>It leaves its epic, ${esc(i.parent)}, behind.</li>` : ""}</ul>
+    <div class="addbar"><button class="btn primary">Move</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
+  const f = s.querySelector("form");
+  s.querySelector("#cancel").onclick = () => closeShade(s);
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const go = f.querySelector(".primary");
+    go.disabled = true;  // a second tap would only be refused, as it has already moved
+    try {
+      const moved = await api("POST", `/api/items/${encodeURIComponent(i.key)}/move-project`, { project: f.to.value });
+      closeShade(s);
+      toast(`${i.key} is now ${moved.key}.`);
+      await refresh(); await openItem(moved.key);
+    } catch (err) { const p = f.querySelector(".err"); p.textContent = err.message; p.hidden = false; go.disabled = false; }
+  };
+  f.to.focus();
+}
+
 function openFromAddress() {
   const page = new URLSearchParams(location.search).get("issue");
   const key = page || location.hash.slice(1);
   if (!/^[A-Z0-9]+-\d+$/.test(key)) return;
   wholePage = !!page;
-  // The address may name another project's issue, so show that project's board and columns behind it.
-  const project = key.split("-")[0];
-  if (project !== state.project && state.projects.some(p => p.key === project)) {
-    state.project = project;
-    attempt(async () => { await load(); drawShell(); await openItem(key); })();
-  } else openItem(key);
+  openItem(key);
 }
 
 // --- Settings: me, tokens, and for admins, projects and users ---
@@ -774,6 +863,25 @@ async function openSettings() {
   s.querySelector("#addproject").onclick = () => { closeShade(s); openNewProject(); };
 }
 
+// --- Which projects the All projects view shows: this person's own choice, kept on the server ---
+
+function openProjects() {
+  const hidden = new Set(state.me.hidden_projects || []);
+  const s = shade(`<form class="dialog"><h2>All projects: which to show</h2><p class="quiet">Your own view. Pick one project or several.</p><p class="err" hidden></p>
+    ${state.projects.map(p => `<label class="check pick-row"><input type="checkbox" value="${esc(p.key)}"${hidden.has(p.key) ? "" : " checked"}> ${esc(p.name)} <span class="quiet">${esc(p.key)}</span></label>`).join("")}
+    <div class="addbar"><button class="btn primary">Show these</button><button class="btn" type="button" id="cancel">Cancel</button></div></form>`, true);
+  s.querySelector("#cancel").onclick = () => closeShade(s);
+  s.querySelector("form").onsubmit = async e => {
+    e.preventDefault();
+    const err = s.querySelector(".err"), boxes = [...s.querySelectorAll("input[type=checkbox]")];
+    if (!boxes.some(b => b.checked)) { err.textContent = "Pick at least one project."; err.hidden = false; return; }
+    try {
+      state.me.hidden_projects = await api("PUT", "/api/me/projects", { hidden: boxes.filter(b => !b.checked).map(b => b.value) });
+      closeShade(s); state.epic = ""; await load(); drawShell();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  };
+}
+
 // --- Columns: edited as a list, then saved all at once ---
 
 async function openColumns(key) {
@@ -782,7 +890,7 @@ async function openColumns(key) {
   const items = await api("GET", `/api/items?project=${encodeURIComponent(key)}`);
   const count = slug => items.filter(i => i.status === slug).length;
   const was = state.me.hidden?.[key] || [];
-  const cols = project.statuses.map(c => ({ slug: c.slug, name: c.name, is_done: !!c.is_done, show: !was.includes(c.slug) }));
+  const cols = project.statuses.map(c => ({ slug: c.slug, name: c.name, is_done: !!c.is_done, color: c.color, show: !was.includes(c.slug) }));
   const removed = [];
   const s = shade(`<form class="dialog"><h2>Columns: ${esc(project.name)}</h2>
     <p class="quiet">Show or hide a column on your own board. ${admin ? "Name, order and removal change it for everyone." : "An admin can change the columns themselves."}</p><p class="err" hidden></p><div id="cols"></div>
@@ -796,7 +904,9 @@ async function openColumns(key) {
       ${admin ? `<label class="check"><input type="checkbox" data-done${c.is_done ? " checked" : ""}> Done</label>
       <button class="btn" type="button" data-up aria-label="Move ${esc(c.name)} left"${n ? "" : " disabled"}>←</button>
       <button class="btn" type="button" data-down aria-label="Move ${esc(c.name)} right"${n < cols.length - 1 ? "" : " disabled"}>→</button>
-      <button class="btn danger" type="button" data-remove aria-label="Remove ${esc(c.name)}"${cols.length > 1 ? "" : " disabled"}>Remove</button>` : ""}</span></div>`).join("");
+      <button class="btn danger" type="button" data-remove aria-label="Remove ${esc(c.name)}"${cols.length > 1 ? "" : " disabled"}>Remove</button>` : ""}</span>
+      ${admin ? `<span class="swatches" role="group" aria-label="Colour of ${esc(c.name || "the new column")}">${Object.entries(COLORS).map(([k, v]) => `<button class="sw tint-${k}" type="button" data-color="${k}" aria-label="${v}" title="${v}" aria-pressed="${c.color === k}"></button>`).join("")}
+        <span class="quiet">${c.color ? COLORS[c.color] : "No colour"}</span><button class="btn link" type="button" data-color=""${c.color ? "" : " disabled"}>Reset colour</button></span>` : ""}</div>`).join("");
     box.querySelectorAll(".col-row").forEach(row => {
       const n = +row.dataset.n;
       row.querySelector("[data-show]").onchange = e => { cols[n].show = e.target.checked; };
@@ -805,6 +915,13 @@ async function openColumns(key) {
       row.querySelector("[data-done]").onchange = e => { cols[n].is_done = e.target.checked; };
       row.querySelector("[data-up]").onclick = () => { [cols[n - 1], cols[n]] = [cols[n], cols[n - 1]]; draw(); };
       row.querySelector("[data-down]").onclick = () => { [cols[n + 1], cols[n]] = [cols[n], cols[n + 1]]; draw(); };
+      row.querySelectorAll("[data-color]").forEach(b => {
+        b.onclick = () => {
+          cols[n].color = b.dataset.color || null; draw();
+          const again = box.querySelector(`[data-n="${n}"]`);  // keep a keyboard user's place; Reset is switched off once used
+          (again.querySelector(`[data-color="${b.dataset.color}"]:not(:disabled)`) || again.querySelector(".sw")).focus();
+        };
+      });
       row.querySelector("[data-remove]").onclick = () => {
         const full = cols[n].slug && count(cols[n].slug);
         // Cards can only move to a saved column, so a new one has to be saved before the last old one goes.
@@ -832,7 +949,7 @@ async function openColumns(key) {
     if (!cols.some(c => c.show)) { err.textContent = "Keep at least one column showing."; err.hidden = false; return; }
     try {
       let saved = project;
-      if (admin) saved = await api("PUT", `/api/projects/${encodeURIComponent(key)}/columns`, { columns: cols.map(c => ({ slug: c.slug, name: c.name, is_done: c.is_done })), move: Object.fromEntries(removed.map(r => [r.slug, r.to])) });
+      if (admin) saved = await api("PUT", `/api/projects/${encodeURIComponent(key)}/columns`, { columns: cols.map(c => ({ slug: c.slug, name: c.name, is_done: c.is_done, color: c.color || null })), move: Object.fromEntries(removed.map(r => [r.slug, r.to])) });
       // A new column only has a slug once saved. It starts showing unless it was unticked here, so match by name.
       const hide = cols.filter(c => !c.show).map(c => c.slug || saved.statuses.find(x => x.name === c.name.trim())?.slug).filter(Boolean);
       const hidden = await api("PUT", `/api/me/hidden/${encodeURIComponent(key)}`, { columns: hide });
