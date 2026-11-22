@@ -23,6 +23,8 @@ Found by an audit before release, and fixed:
 - Wrong passwords are counted per address and name. Behind a proxy, where everyone shares one address, one person's wrong guesses no longer stop everyone signing in.
 - Changing your password signs you out everywhere else.
 - A connection that sends nothing is dropped after 30 seconds.
+- A ticket written to make the Markdown reader rescan (100,000 unclosed `[`) no longer freezes the page of whoever opens it: it renders in milliseconds, not seconds.
+- A sign-in that was already checking the password when the password changed no longer gets a session.
 
 ### Fixed
 

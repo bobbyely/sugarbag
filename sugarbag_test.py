@@ -319,6 +319,39 @@ ok(call("POST", "/api/password", {"old": "password-3", "new": "password-33"}, co
 assert ok(call("GET", "/api/me", cookie=view))["name"] == "view"  # the session that changed it stays
 assert call("GET", "/api/me", cookie=other)[0] == 401
 
+# A login whose password check was already running when the password changed gets no session.
+real_check = sugarbag.check_password
+
+
+def change_midway(password, stored):
+    good = real_check(password, stored)
+    sugarbag.check_password = real_check
+    db = sugarbag.connect()
+    db.execute("UPDATE users SET password = ? WHERE name = 'view'", (sugarbag.hash_password("password-34"),))
+    db.execute("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE name = 'view')")
+    db.close()
+    return good
+
+
+sugarbag.check_password = change_midway
+assert call("POST", "/api/login", {"name": "view", "password": "password-33"})[0] == 401
+assert sugarbag.check_password is real_check
+view = sign_in("view", "password-34")
+
+# Markdown is read in one pass: 100,000 characters shaped to make a careless pattern rescan the line render quickly.
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+if shutil.which("node"):
+    md = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "md.js")
+    check = """require(process.argv[1]); const N = 100000;
+    for (const piece of ["[", "[<", "[&", "[a](http://x", "**a", "`a", "~~a", "&", "- a\\n", "|a|\\n"]) {
+      const t = Date.now(); mdToHtml(piece.repeat(N / piece.length)); const ms = Date.now() - t;
+      if (ms > 200) { console.log(JSON.stringify(piece) + " took " + ms + " ms"); process.exit(1); } }"""
+    slow = subprocess.run(["node", "-e", check, md], capture_output=True, text=True)
+    assert slow.returncode == 0, slow.stdout + slow.stderr
+else:
+    print("node not found: skipped the Markdown speed check")
+
 # A user name outside plain ASCII can still be managed from the page, which sends it percent-encoded.
 ok(call("POST", "/api/users", {"name": "José", "password": "password-5"}, cookie=ann))
 assert ok(call("PATCH", "/api/users/Jos%C3%A9", {"role": "viewer"}, cookie=ann))["role"] == "viewer"

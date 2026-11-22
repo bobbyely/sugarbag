@@ -3,12 +3,13 @@
 // shortcut: headings, lists, tick boxes, tables, code, bold, strikethrough and links only, add more when an issue needs them.
 (function (root) {
   const esc = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  // Only web links, so an issue can't smuggle in javascript:.
+  // Only web links, so an issue can't smuggle in javascript:. Neither part may hold a "[": each try then stops at the next one,
+  // so a line of unclosed brackets is read once, not once per bracket (which froze the page on 100,000 of them).
   const inline = s => esc(s)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .replace(/~~([^~]+)~~/g, "<s>$1</s>")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    .replace(/\[([^[\]]+)\]\((https?:\/\/[^)\s[]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   root.mdInline = inline;  // for one-line titles
   const cells = l => l.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
   const listItem = /^\s*(-|\d+\.) /, block = /^(#{1,4} |```|\s*\||\s*(-|\d+\.) )/;

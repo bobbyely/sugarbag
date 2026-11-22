@@ -350,6 +350,11 @@ def login(ctx):
     token = secrets.token_urlsafe(32)
     now = int(time.time())
     with tx(ctx.conn) as c:
+        # The hash is slow, so a password change can land while it runs. Check again inside the lock, or this login
+        # would make a session after the change had signed everyone out.
+        now_hash = c.execute("SELECT password FROM users WHERE id = ? AND active = 1", (row["id"],)).fetchone()
+        if not now_hash or now_hash["password"] != row["password"]:
+            raise ApiError(401, "wrong name or password")
         c.execute("DELETE FROM sessions WHERE expires < ?", (now,))
         c.execute("INSERT INTO sessions VALUES (?,?,?)", (sha(token), row["id"], now + SESSION_DAYS * 86400))
     ctx.set_cookie(token, SESSION_DAYS * 86400)
