@@ -50,7 +50,8 @@ KEY = re.compile(r"^([A-Z][A-Z0-9]{1,9})-(\d+)$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
-  password TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL, hidden_columns TEXT NOT NULL DEFAULT '{}');
+  password TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL, hidden_columns TEXT NOT NULL DEFAULT '{}',
+  done_days INTEGER NOT NULL DEFAULT 14);
 CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS tokens (id INTEGER PRIMARY KEY, hash TEXT NOT NULL UNIQUE, user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   label TEXT NOT NULL, created INTEGER NOT NULL, last_used INTEGER);
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, item_id INTEGER NOT
   user_id INTEGER REFERENCES users ON DELETE SET NULL, body TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES items ON DELETE CASCADE,
   user_id INTEGER REFERENCES users ON DELETE SET NULL, field TEXT NOT NULL, old TEXT, new TEXT, at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS activity_item ON activity (item_id, field);
 """
 
 log = logging.getLogger("sugarbag")
@@ -99,6 +101,8 @@ def upgrade(conn):
     has = lambda table, column: any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))  # noqa: E731
     if not has("users", "hidden_columns"):
         conn.execute("ALTER TABLE users ADD COLUMN hidden_columns TEXT NOT NULL DEFAULT '{}'")
+    if not has("users", "done_days"):
+        conn.execute("ALTER TABLE users ADD COLUMN done_days INTEGER NOT NULL DEFAULT 14")
     if not has("items", "next"):
         conn.execute("ALTER TABLE items ADD COLUMN next TEXT NOT NULL DEFAULT ''")
     if not has("items", "status_since"):
@@ -215,8 +219,14 @@ def check_children(conn, item_id, new_type):
         check_parent(kind, new_type)
 
 
+# When an item in a done column was finished: the last time it moved into a done column, or its last change if it was
+# made there. NULL for items that aren't done. The board uses it to show only recent done work.
+FINISHED = """CASE WHEN EXISTS (SELECT 1 FROM statuses s WHERE s.project_id = i.project_id AND s.slug = i.status AND s.is_done = 1)
+  THEN COALESCE((SELECT MAX(a.at) FROM activity a JOIN statuses s ON s.project_id = i.project_id AND s.slug = a.new AND s.is_done = 1
+                 WHERE a.item_id = i.id AND a.field = 'status'), i.updated) END"""
+
 ITEM_SELECT = """
-SELECT i.*, p.key AS project_key, u.name AS assignee, c.name AS creator, pi.num AS parent_num, pi.title AS parent_title, pi.type AS parent_type,
+SELECT i.*, p.key AS project_key, (""" + FINISHED + """) AS finished, u.name AS assignee, c.name AS creator, pi.num AS parent_num, pi.title AS parent_title, pi.type AS parent_type,
   (SELECT COUNT(*) FROM items k WHERE k.parent_id = i.id) AS children,
   (SELECT COUNT(*) FROM items k JOIN statuses s ON s.project_id = k.project_id AND s.slug = k.status
     WHERE k.parent_id = i.id AND s.is_done = 1) AS children_done,
@@ -231,7 +241,7 @@ def item_json(row):
     return {"key": f"{key}-{row['num']}", "project": key, "type": row["type"], "title": row["title"], "body": row["body"],
             "status": row["status"], "priority": row["priority"], "assignee": row["assignee"], "labels": json.loads(row["labels"]),
             "parent": f"{key}-{row['parent_num']}" if row["parent_num"] else None, "parent_title": row["parent_title"], "parent_type": row["parent_type"],
-            "start": row["start_date"], "due": row["due_date"], "ref": row["ref"], "next": row["next"], "status_since": row["status_since"], "position": row["position"], "children": row["children"],
+            "start": row["start_date"], "due": row["due_date"], "ref": row["ref"], "next": row["next"], "status_since": row["status_since"], "finished": row["finished"], "position": row["position"], "children": row["children"],
             "children_done": row["children_done"], "comment_count": row["comment_count"], "created_by": row["creator"], "created": row["created"], "updated": row["updated"]}
 
 
@@ -337,6 +347,17 @@ def public_user(row):
 NAME = re.compile(r"^[\w.-]+$")
 
 
+def day_count(value):
+    """How many days of done work to show: a whole number from 0 (all of it) to 3650."""
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = -1
+    if isinstance(value, bool) or isinstance(value, float) or not 0 <= days <= 3650:
+        raise ApiError(400, "done_days must be a whole number from 0 to 3650")
+    return days
+
+
 @route("GET", "/health", None)
 def health(ctx):
     ctx.conn.execute("SELECT 1 FROM projects LIMIT 1")
@@ -386,20 +407,26 @@ def logout(ctx):
 
 @route("GET", "/api/me")
 def me(ctx):
-    return dict(public_user(ctx.user), hidden=json.loads(ctx.user["hidden_columns"]))
+    return dict(public_user(ctx.user), hidden=json.loads(ctx.user["hidden_columns"]), done_days=ctx.user["done_days"])
 
 
 @route("PATCH", "/api/me")
 def rename_me(ctx):
-    name = text(ctx.body, "name", 80, True)
-    if not NAME.match(name):
+    """Your own name, and how many days of finished work your board shows. Your own view, so a viewer may set it too."""
+    if "name" not in ctx.body and "done_days" not in ctx.body:
+        raise ApiError(400, "send a name or done_days")
+    days = day_count(ctx.body["done_days"]) if "done_days" in ctx.body else ctx.user["done_days"]
+    name = text(ctx.body, "name", 80, True) if "name" in ctx.body else ctx.user["name"]
+    if "name" in ctx.body and not NAME.match(name):  # a name made at the command line may not fit; only check a new one
         raise ApiError(400, "a name can only have letters, numbers, dots and dashes")
     try:
-        ctx.conn.execute("UPDATE users SET name = ? WHERE id = ?", (name, ctx.user["id"]))
+        ctx.conn.execute("UPDATE users SET name = ?, done_days = ? WHERE id = ?", (name, days, ctx.user["id"]))
     except sqlite3.IntegrityError:
         raise ApiError(409, "that name is taken") from None
-    log.info("user renamed: %s to %s", ctx.user["name"], name)
-    return {"name": name, "role": ctx.user["role"], "active": True}
+    if name != ctx.user["name"]:
+        log.info("user renamed: %s to %s", ctx.user["name"], name)
+    row = ctx.conn.execute("SELECT * FROM users WHERE id = ?", (ctx.user["id"],)).fetchone()
+    return dict(public_user(row), hidden=json.loads(row["hidden_columns"]), done_days=row["done_days"])
 
 
 @route("PUT", "/api/me/hidden/([^/]+)")
@@ -513,7 +540,11 @@ def del_token(ctx, token_id):
 @route("GET", "/api/projects")
 def list_projects(ctx):
     rows = ctx.conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
-    return [{"key": r["key"], "name": r["name"], "statuses": statuses_of(ctx.conn, r["id"])} for r in rows]
+    out = []
+    for r in rows:
+        counts = dict(ctx.conn.execute("SELECT status, COUNT(*) FROM items WHERE project_id = ? GROUP BY status", (r["id"],)).fetchall())
+        out.append({"key": r["key"], "name": r["name"], "statuses": [dict(s, count=counts.get(s["slug"], 0)) for s in statuses_of(ctx.conn, r["id"])]})
+    return out
 
 
 @route("POST", "/api/projects", "admin")
@@ -593,6 +624,11 @@ def list_items(ctx):
         where.append("(i.title LIKE ? ESCAPE '\\' OR i.body LIKE ? ESCAPE '\\')")
         like = "%" + re.sub(r"([\\%_])", r"\\\1", ctx.query["q"]) + "%"
         args += [like, like]
+    if "done_days" in ctx.query:  # the board's view: done work finished within that many days, plus every epic (filters and menus need them)
+        days = day_count(ctx.query["done_days"])
+        if days:
+            where.append(f"(i.type = 'epic' OR COALESCE({FINISHED}, 1e18) >= ?)")
+            args.append(int(time.time()) - days * 86400)
     # shortcut: no paging, fine for thousands of items in one small team's project, add limit and offset past that.
     rows = ctx.conn.execute(ITEM_SELECT + " WHERE " + " AND ".join(where) + " ORDER BY i.position", args).fetchall()
     items = [item_json(r) for r in rows]

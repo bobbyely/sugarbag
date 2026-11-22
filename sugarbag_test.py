@@ -183,9 +183,11 @@ ok(call("DELETE", f"/api/items/{aged['key']}", cookie=mem))
 
 # An older database gets the new columns, with sensible dates.
 old_path = os.path.join(tmp.name, "old.db")
-old_schema = sugarbag.SCHEMA.replace(", hidden_columns TEXT NOT NULL DEFAULT '{}'", "").replace(" status_since INTEGER,", "").replace(" next TEXT NOT NULL DEFAULT '',", "")
+old_schema = sugarbag.SCHEMA.replace(", hidden_columns TEXT NOT NULL DEFAULT '{}'", "").replace(" status_since INTEGER,", "").replace(" next TEXT NOT NULL DEFAULT '',", "").replace(",\n  done_days INTEGER NOT NULL DEFAULT 14", "")
 old = sqlite3.connect(old_path)
 old.executescript(old_schema)
+assert "done_days" not in old_schema
+old.execute("INSERT INTO users (name, role, password, created) VALUES ('olduser', 'admin', 'x', 1)")
 old.execute("INSERT INTO projects (key, name) VALUES ('OL', 'Old')")
 old.execute("INSERT INTO items (project_id, num, type, title, status, position, created, updated) VALUES (1, 1, 'task', 'a', 'ideas', 1, 500, 500)")
 old.execute("INSERT INTO items (project_id, num, type, title, status, position, created, updated) VALUES (1, 2, 'task', 'b', 'ideas', 2, 500, 500)")
@@ -198,6 +200,7 @@ sugarbag.init_db()
 sugarbag.init_db()  # and again, harmlessly
 check = sugarbag.connect()
 assert [r["status_since"] for r in check.execute("SELECT status_since FROM items ORDER BY id")] == [500, 700]
+assert check.execute("SELECT done_days FROM users WHERE name = 'olduser'").fetchone()["done_days"] == 14  # old users get the default
 assert [r["next"] for r in check.execute("SELECT next FROM items ORDER BY id")] == ["", ""]  # old rows keep working, with no next step
 check.close()
 os.environ["SUGARBAG_DB"] = saved
@@ -303,6 +306,44 @@ assert epic_key not in sb("list")[1] and epic_key in sb("list", "--all", "--q", 
 ok(call("DELETE", f"/api/items/{epic_key}", cookie=ann))
 assert sb("move", key, "nope")[0] != 0 and "Sugarbag said no" in sb("move", key, "nope")[2]
 assert sb("show", "AB-99999")[0] != 0
+
+# Done columns on the board: only work finished in your last N days (14 unless you change it), counted by the server.
+assert ok(call("GET", "/api/me", cookie=view))["done_days"] == 14
+for bad in (-1, 3651, "x", True, 1.5, None):
+    assert call("PATCH", "/api/me", {"done_days": bad}, cookie=view)[0] == 400, bad
+assert call("PATCH", "/api/me", {}, cookie=view)[0] == 400
+assert ok(call("PATCH", "/api/me", {"done_days": 7}, cookie=view))["done_days"] == 7  # your own view, so a viewer may set it
+assert ok(call("GET", "/api/me", cookie=view))["done_days"] == 7 and ok(call("GET", "/api/me", cookie=ann))["done_days"] == 14
+ok(call("PATCH", "/api/me", {"done_days": 0}, cookie=view))
+ok(call("POST", "/api/projects", {"key": "DW", "name": "Done window"}, cookie=ann))
+day = 86400
+done_keys = {}
+for label, age in (("recent", 13), ("old", 15)):
+    key = ok(call("POST", "/api/items", {"project": "DW", "title": label}, cookie=ann), 201)["key"]
+    ok(call("POST", f"/api/items/{key}/move", {"status": "done"}, cookie=ann))
+    done_keys[label] = key
+made_done = ok(call("POST", "/api/items", {"project": "DW", "title": "made done", "status": "done"}, cookie=ann), 201)["key"]
+old_epic = ok(call("POST", "/api/items", {"project": "DW", "title": "old epic", "type": "epic", "status": "done"}, cookie=ann), 201)["key"]
+working = ok(call("POST", "/api/items", {"project": "DW", "title": "working"}, cookie=ann), 201)["key"]
+db = sugarbag.connect()
+for label, age in (("recent", 13), ("old", 15)):
+    db.execute("UPDATE activity SET at = at - ? WHERE field = 'status' AND item_id = (SELECT i.id FROM items i JOIN projects p ON p.id = i.project_id "
+               "WHERE p.key = 'DW' AND i.num = ?)", (age * day, int(done_keys[label].split("-")[1])))
+# Made straight into done, with no move in its history: its last change counts.
+db.execute("UPDATE items SET updated = updated - ? WHERE num IN (?, ?) AND project_id = (SELECT id FROM projects WHERE key = 'DW')",
+           (20 * day, int(made_done.split("-")[1]), int(old_epic.split("-")[1])))
+db.close()
+recent = {i["key"] for i in ok(call("GET", "/api/items?project=DW&done_days=14", cookie=ann))}
+assert recent == {done_keys["recent"], old_epic, working}, recent  # epics stay for menus and filters
+assert {i["key"] for i in ok(call("GET", "/api/items?project=DW&done_days=0", cookie=ann))} == recent | {done_keys["old"], made_done}
+everything = ok(call("GET", "/api/items?project=DW", cookie=ann))  # without the filter, as sb.py and scripts ask: all of it
+assert len(everything) == 5 and all((i["finished"] is None) == (i["key"] == working) for i in everything)
+assert call("GET", "/api/items?project=DW&done_days=-3", cookie=ann)[0] == 400
+done_col = [c for p in ok(call("GET", "/api/projects", cookie=view)) if p["key"] == "DW" for c in p["statuses"] if c["slug"] == "done"][0]
+assert done_col["count"] == 4
+env["SUGARBAG_PROJECT"] = "DW"
+assert done_keys["old"] in sb("list", "--all")[1] and done_keys["old"] not in sb("list")[1] and working in sb("list")[1]
+env["SUGARBAG_PROJECT"] = "AB"
 env["SUGARBAG_TOKEN"] = ""
 assert "No token" in sb("list")[2]
 

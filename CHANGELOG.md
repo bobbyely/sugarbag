@@ -9,6 +9,7 @@ The first public release: a small issue tracker with a Kanban board, for one per
 ### What's in it
 
 - A board with columns each project can set, drag and drop, and cards that show how long they have sat in a column.
+- Done columns show only the last 14 days of finished work, with a link to all of it, newest first. Each person picks the number of days (0 shows all).
 - Epics, stories, tasks, bugs and sub-tasks; priority, assignee, a one-line next step, labels, dates, Markdown descriptions, comments and history.
 - List, roadmap and timeline views, search and filters.
 - Light and dark, and a layout that works on a phone.

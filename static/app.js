@@ -102,7 +102,9 @@ async function start() {
 }
 
 async function load() {
-  state.items = state.project ? await api("GET", `/api/items?project=${encodeURIComponent(state.project)}`) : [];
+  // The board shows only recently finished work, so it doesn't fetch every old done ticket; the other views get everything.
+  const recent = state.view === "board" && state.me?.done_days ? `&done_days=${state.me.done_days}` : "";
+  state.items = state.project ? await api("GET", `/api/items?project=${encodeURIComponent(state.project)}${recent}`) : [];
 }
 
 // --- The frame around the board ---
@@ -124,9 +126,9 @@ function drawShell() {
     <div id="view"></div>`;
   document.getElementById("project").onchange = attempt(async e => {
     if (e.target.value === "+new") { e.target.value = state.project || ""; return openNewProject(); }
-    state.project = e.target.value; state.epic = ""; remember(); await load(); drawShell();
+    state.project = e.target.value; state.epic = ""; state.doneColumn = null; remember(); await load(); drawShell();
   });
-  $app.querySelectorAll(".tabs button").forEach(b => { b.onclick = () => { state.view = b.dataset.view; boardShown = false; remember(); drawShell(); }; });
+  $app.querySelectorAll(".tabs button").forEach(b => { b.onclick = attempt(() => showView(b.dataset.view)); });
   document.getElementById("q").oninput = e => { state.q = e.target.value; drawView(); };
   document.getElementById("who").onchange = e => { state.assignee = e.target.value; drawView(); };
   document.getElementById("epic").onchange = e => { state.epic = e.target.value; drawView(); };
@@ -141,6 +143,12 @@ function drawShell() {
   if (create) create.onclick = () => openCreate();
   drawFilters();
   drawView();
+}
+
+// Switching between the board and the rest reloads, because the board leaves out older done work.
+async function showView(view, doneColumn = null) {
+  state.view = view; state.doneColumn = doneColumn; boardShown = false; remember();
+  await load(); drawShell();
 }
 
 function drawFilters() {
@@ -214,13 +222,15 @@ function drawBoard(box) {
     return `<section class="column" data-status="${esc(s.slug)}" aria-label="${esc(s.name)}">
       <header><span>${esc(s.name)}</span><span class="count">${cards.length}</span>${s.is_done ? '<span class="tick" aria-hidden="true">✓</span>' : ""}</header>
       <div class="cards">${cards.map(cardHtml).join("")}</div>
+      ${s.is_done && s.count > state.items.filter(i => i.status === s.slug).length ? `<button class="add-card all-done" data-done="${esc(s.slug)}">Show all ${s.count} done</button>` : ""}
       ${canEdit() ? '<button class="add-card">+ New ticket</button>' : ""}</section>`;
   }).join("");
   box.scrollLeft = scroll;
   // On a phone only one column fits, so open on the first one with work in it.
   if (!boardShown && innerWidth <= 600) box.querySelector(".column:has(.card)")?.scrollIntoView({ inline: "start", block: "nearest" });
   boardShown = true;
-  box.querySelectorAll(".add-card").forEach(b => { b.onclick = () => openCreate({ status: b.closest(".column").dataset.status }); });
+  box.querySelectorAll(".add-card:not(.all-done)").forEach(b => { b.onclick = () => openCreate({ status: b.closest(".column").dataset.status }); });
+  box.querySelectorAll("[data-done]").forEach(b => { b.onclick = attempt(() => showView("list", b.dataset.done)); });
   box.querySelectorAll(".card").forEach(c => { if (canEdit()) enableDrag(c); c.onclick = () => { if (!justDragged) openItem(c.dataset.key); }; });
 }
 
@@ -320,8 +330,20 @@ async function finishDrag(d) {
 
 // --- The list: everything, nested, including what the board leaves out ---
 
+// Everything in one done column, most recently finished first: where "Show all done" on the board leads.
+function drawDoneList(box) {
+  const s = statusInfo(state.doneColumn);
+  const rows = state.items.filter(i => i.status === state.doneColumn && matches(i)).sort((a, b) => (b.finished || 0) - (a.finished || 0));
+  const day = t => t ? new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "";
+  box.innerHTML = `<div class="done-head"><button class="btn" id="backboard">&larr; Back to board</button><h2>${esc(s?.name || state.doneColumn)}: all ${rows.length}, newest first</h2></div>` +
+    (rows.map(i => `<button class="row" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span><span class="t">${mdInline(i.title)}</span><span class="tl-note">${esc(day(i.finished))}</span>${avatar(i.assignee)}</button>`).join("") || '<p class="empty">Nothing here.</p>');
+  box.querySelector("#backboard").onclick = attempt(() => showView("board"));
+  box.querySelectorAll(".row").forEach(r => { r.onclick = () => openItem(r.dataset.key); });
+}
+
 function drawList(box) {
   box.className = "list";
+  if (state.doneColumn && statusInfo(state.doneColumn)) return drawDoneList(box);
   const rows = [];
   const add = (i, depth) => {
     rows.push(`<button class="row ${depth === 1 ? "child" : depth === 2 ? "grand" : ""}" data-key="${esc(i.key)}">${typeIcon(i.type)}<span class="key">${esc(i.key)}</span>
@@ -685,6 +707,7 @@ async function openSettings() {
   const admin = state.me.role === "admin";
   const s = shade(`<div class="dialog"><h2>Settings</h2><p class="quiet">Signed in as ${esc(state.me.name)} (${esc(state.me.role)}).</p>
     <h3 class="section">Your name</h3><form class="addbar" id="rename"><label class="sr" for="myname">Your name</label><input class="input" id="myname" value="${esc(state.me.name)}" autocapitalize="none" autocomplete="username" maxlength="80" required><button class="btn">Save name</button></form>
+    <h3 class="section">Done columns</h3><form class="addbar" id="donedays"><label class="field">Days of finished tickets to show on the board (0 shows all)<input class="input" id="days" type="number" inputmode="numeric" min="0" max="3650" step="1" value="${esc(state.me.done_days ?? 14)}" required></label><button class="btn">Save</button></form>
     <h3 class="section">Look</h3><div class="addbar" id="themes">${Object.entries(THEMES).map(([k, v]) => `<button class="btn" type="button" data-theme-pick="${k}" aria-pressed="${(state.theme || "auto") === k}">${v}</button>`).join("")}</div>
     ${admin ? `<h3 class="section">Projects</h3>${state.projects.map(p => `<div class="table-row"><b>${esc(p.name)}</b><span class="quiet">${esc(p.key)}</span><button class="btn" data-columns="${esc(p.key)}">Columns</button></div>`).join("")}
       <div class="addbar"><button class="btn" type="button" id="addproject">+ New project</button></div>
@@ -706,6 +729,12 @@ async function openSettings() {
     await load(); drawShell();  // cards name the assignee, so they change too
     await again();
     toast("Name saved.");
+  });
+  s.querySelector("#donedays").onsubmit = attempt(async e => {
+    e.preventDefault();
+    Object.assign(state.me, await api("PATCH", "/api/me", { done_days: Number(s.querySelector("#days").value) }));
+    await load(); drawShell();
+    toast("Saved.");
   });
   s.querySelectorAll("[data-theme-pick]").forEach(b => {
     b.onclick = () => {
