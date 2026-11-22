@@ -845,8 +845,12 @@ async function openColumns(key) {
 }
 
 // Agents change things too, so keep the board fresh while it's on screen.
-setInterval(() => {
-  if (state.me && !document.hidden && !activeDrag && !document.querySelector(".shade")) attempt(refresh)();
+// One refresh at a time: on a slow line, a new one would otherwise cancel the last before it ever arrived.
+let refreshing = false;
+setInterval(async () => {
+  if (refreshing || !state.me || document.hidden || activeDrag || document.querySelector(".shade")) return;
+  refreshing = true;
+  try { await attempt(refresh)(); } finally { refreshing = false; }
 }, 15000);
 
 start().catch(() => drawLogin());
