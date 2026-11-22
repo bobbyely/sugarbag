@@ -27,6 +27,7 @@ Found by an audit before release, and fixed:
 - A sign-in that was already checking the password when the password changed no longer gets a session.
 - Two password changes at the same moment can no longer undo each other; the later one is refused.
 - A token made in the moment an admin switches its owner off is refused, so it can't work after they're switched back on.
+- A request whose token or session is revoked while it runs can no longer make a new token, change the password, or add or re-enable people.
 - Old wrong guesses drop out of the count even if someone keeps guessing slowly.
 - Changing a password no longer holds up everyone else's changes while the new one is hashed.
 

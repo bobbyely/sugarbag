@@ -307,6 +307,18 @@ def position_before(conn, project_id, status, before_key):
 
 # --- The API ---
 
+def still_signed_in(c, ctx, role="viewer"):
+    """Inside a write transaction: the user is still active with that role, and the session or token this request came
+    with still exists. Routes that hand out credentials call it, so a sign-in revoked mid-request can't mint a new one."""
+    user = c.execute("SELECT role FROM users WHERE id = ? AND active = 1", (ctx.user["id"],)).fetchone()
+    if ctx.session:
+        held = c.execute("SELECT 1 FROM sessions WHERE hash = ?", (sha(ctx.session),)).fetchone()
+    else:
+        held = c.execute("SELECT 1 FROM tokens WHERE hash = ? AND user_id = ?", (ctx.token_hash, ctx.user["id"])).fetchone()
+    if not user or not held or not role_allows(user["role"], role):
+        raise ApiError(401, "Please sign in.")
+
+
 ROUTES = []
 
 
@@ -415,6 +427,7 @@ def change_password(ctx):
         raise ApiError(400, "a password needs at least 8 characters")
     hashed = hash_password(new)  # slow, so before taking the write lock
     with tx(ctx.conn) as c:
+        still_signed_in(c, ctx)
         # Another change may have landed while the old password was checked. Writing over it would undo it.
         now_hash = c.execute("SELECT password FROM users WHERE id = ? AND active = 1", (ctx.user["id"],)).fetchone()
         if not now_hash or now_hash["password"] != ctx.user["password"]:
@@ -441,10 +454,13 @@ def add_user_route(ctx):
         raise ApiError(400, "a name can only have letters, numbers, dots and dashes")
     if not isinstance(password, str) or len(password) < 8:
         raise ApiError(400, "a password needs at least 8 characters")
-    try:
-        ctx.conn.execute("INSERT INTO users (name, role, password, created) VALUES (?,?,?,?)", (name, role, hash_password(password), int(time.time())))
-    except sqlite3.IntegrityError:
-        raise ApiError(409, "that name is taken") from None
+    hashed = hash_password(password)  # slow, so before the write lock
+    with tx(ctx.conn) as c:
+        still_signed_in(c, ctx, "admin")
+        try:
+            c.execute("INSERT INTO users (name, role, password, created) VALUES (?,?,?,?)", (name, role, hashed, int(time.time())))
+        except sqlite3.IntegrityError:
+            raise ApiError(409, "that name is taken") from None
     log.info("user added: %s (%s) by %s", name, role, ctx.user["name"])
     return {"name": name, "role": role, "active": True}
 
@@ -458,6 +474,7 @@ def edit_user(ctx, name):
     if role not in ROLES or not isinstance(active, bool):
         raise ApiError(400, "bad role or active")
     with tx(ctx.conn) as c:
+        still_signed_in(c, ctx, "admin")  # it can switch people back on or make them admin
         others = c.execute("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1 AND id != ?", (row["id"],)).fetchone()["n"]
         if not others and (role != "admin" or not active) and row["role"] == "admin":
             raise ApiError(400, "that would leave nobody who can manage users")
@@ -480,10 +497,8 @@ def add_token(ctx):
     label = text(ctx.body, "label", 80, True)
     token = "sugarbag_" + secrets.token_urlsafe(32)
     with tx(ctx.conn) as c:
-        # Switching someone off deletes their tokens; one made in the same moment must not slip through and work after.
-        if not c.execute("SELECT 1 FROM users WHERE id = ? AND active = 1", (ctx.user["id"],)).fetchone() or (
-                ctx.session and not c.execute("SELECT 1 FROM sessions WHERE hash = ?", (sha(ctx.session),)).fetchone()):
-            raise ApiError(401, "Please sign in.")
+        # Switching someone off or revoking this sign-in deletes it; a token made in the same moment must not slip through.
+        still_signed_in(c, ctx, "member")
         c.execute("INSERT INTO tokens (hash, user_id, label, created) VALUES (?,?,?,?)", (sha(token), ctx.user["id"], label, int(time.time())))
     return {"token": token, "label": label}
 
@@ -746,6 +761,7 @@ class Ctx:
     def __init__(self, handler, conn, query, body):
         self.handler, self.conn, self.query, self.body = handler, conn, query, body
         self.ip, self.user, self.session, self.status, self.cookie = handler.client_address[0], None, None, 200, None
+        self.token_hash = None  # the API token this request signed in with, if any
 
     def set_cookie(self, value, age):
         secure = "; Secure" if os.environ.get("SUGARBAG_SECURE_COOKIE") == "1" else ""
@@ -786,6 +802,7 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time())
         if auth.startswith("Bearer "):
             token = auth[7:].strip()
+            ctx.token_hash = sha(token)
             row = ctx.conn.execute("SELECT u.* FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ? AND u.active = 1", (sha(token),)).fetchone()
             if row:
                 ctx.conn.execute("UPDATE tokens SET last_used = ? WHERE hash = ?", (now, sha(token)))

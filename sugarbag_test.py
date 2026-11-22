@@ -406,6 +406,37 @@ assert sugarbag.secrets.token_urlsafe is real_urlsafe
 ok(call("PATCH", "/api/users/tok", {"active": True}, cookie=ann))
 assert not sugarbag.connect().execute("SELECT 1 FROM tokens t JOIN users u ON u.id = t.user_id WHERE u.name = 'tok'").fetchone()
 
+# A token revoked while a request signed in with it is making a new one: refused, and no new token is left.
+tok = sign_in("tok", "password-7")  # switching off signed it out
+token_a = ok(call("POST", "/api/tokens", {"label": "A"}, cookie=tok))["token"]
+a_id = ok(call("GET", "/api/tokens", cookie=tok))[-1]["id"]
+
+
+def revoked_meanwhile(n):
+    sugarbag.secrets.token_urlsafe = real_urlsafe
+    ok(call("DELETE", f"/api/tokens/{a_id}", cookie=tok))
+    return real_urlsafe(n)
+
+
+sugarbag.secrets.token_urlsafe = revoked_meanwhile
+assert call("POST", "/api/tokens", {"label": "B"}, token=token_a)[0] == 401
+assert sugarbag.secrets.token_urlsafe is real_urlsafe and ok(call("GET", "/api/tokens", cookie=tok)) == []
+
+# The same for an admin's token while it adds a person.
+token_admin = ok(call("POST", "/api/tokens", {"label": "admin"}, cookie=ann))["token"]
+admin_id = ok(call("GET", "/api/tokens", cookie=ann))[-1]["id"]
+
+
+def admin_token_revoked(password):
+    sugarbag.hash_password = real_hash
+    ok(call("DELETE", f"/api/tokens/{admin_id}", cookie=ann))
+    return real_hash(password)
+
+
+sugarbag.hash_password = admin_token_revoked
+assert call("POST", "/api/users", {"name": "late", "password": "password-8"}, token=token_admin)[0] == 401
+assert sugarbag.hash_password is real_hash and "late" not in [u["name"] for u in ok(call("GET", "/api/users", cookie=ann))]
+
 # A user name outside plain ASCII can still be managed from the page, which sends it percent-encoded.
 ok(call("POST", "/api/users", {"name": "José", "password": "password-5"}, cookie=ann))
 assert ok(call("PATCH", "/api/users/Jos%C3%A9", {"role": "viewer"}, cookie=ann))["role"] == "viewer"
