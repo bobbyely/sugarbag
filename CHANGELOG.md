@@ -15,6 +15,22 @@ The first public release: a small issue tracker with a Kanban board, for one per
 - Admin, member and viewer roles; API tokens; a JSON API and `sb.py`, a command-line client for scripts and agents.
 - `GET /api/export` for everything as JSON.
 
+### Security
+
+Found by an audit before release, and fixed:
+
+- A request with a negative body length is refused before anything is read. Before, it skipped the 1 MB limit, without a login.
+- Wrong passwords are counted per address and name. Behind a proxy, where everyone shares one address, one person's wrong guesses no longer stop everyone signing in.
+- Changing your password signs you out everywhere else.
+- A connection that sends nothing is dropped after 30 seconds.
+
+### Fixed
+
+- People whose names have letters outside plain English (José) can have their role changed from the page.
+- Higher contrast for epic and overdue labels, the days-in-column count, quiet text and placeholders, in light and dark.
+- On a phone, the project menu uses the room beside it, so its name isn't cut short.
+- Timeline rows show a title's Markdown the way the board does.
+
 ### Upgrading
 
 Nothing to do for a first release. Later versions upgrade the database themselves when they start, and only ever add to it. Back up the database file first anyway: see the README.

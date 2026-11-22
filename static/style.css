@@ -1,20 +1,20 @@
 /* Sugarbag's look. Read by index.html. All colours are tokens here, so a theme only changes these. */
 :root {
   color-scheme: light dark;
-  --bg: #fff; --col: #f1f2f4; --card: #fff; --ink: #172b4d; --quiet: #5e6c84; --line: #dfe1e6; --hover: #e9ebee; --shadow: 0 1px 1px #091e4240, 0 0 1px #091e424f;
-  --accent: #0c66e4; --accent-ink: #fff; --accent-soft: #e9f2ff; --drop: #cce0ff; --bad: #c9372c; --done: #1f845a; --done-soft: #dcfff1;
-  --epic: #6e5dc6; --story: #22a06b; --task: #1d7afc; --bug: #e2483d; --subtask: #2898bd; --warn: #e56910; --lozenge: #dfe1e6;
+  --bg: #fff; --col: #f1f2f4; --card: #fff; --ink: #172b4d; --quiet: #505f79; --line: #dfe1e6; --hover: #e9ebee; --shadow: 0 1px 1px #091e4240, 0 0 1px #091e424f;
+  --accent: #0c66e4; --accent-ink: #fff; --accent-soft: #e9f2ff; --drop: #cce0ff; --bad: #ae2e24; --done: #216e4e; --done-soft: #dcfff1;
+  --epic: #6554c0; --story: #22a06b; --task: #1d7afc; --bug: #e2483d; --subtask: #2898bd; --warn: #c25100; --lozenge: #dfe1e6;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #1d2125; --col: #161a1d; --card: #22272b; --ink: #dee4ea; --quiet: #9fadbc; --line: #38414a; --hover: #2c333a; --shadow: 0 1px 1px #03040480, 0 0 1px #03040480;
-  --accent: #579dff; --accent-ink: #1d2125; --accent-soft: #1c2b41; --drop: #09326c; --bad: #f87168; --done: #4bce97; --done-soft: #164b35;
-  --epic: #9f8fef; --story: #4bce97; --task: #579dff; --bug: #f87168; --subtask: #60c6d2; --warn: #fea362; --lozenge: #38414a;
+  --accent: #579dff; --accent-ink: #1d2125; --accent-soft: #1c2b41; --drop: #09326c; --bad: #fa8a82; --done: #4bce97; --done-soft: #164b35;
+  --epic: #ada2f2; --story: #4bce97; --task: #579dff; --bug: #f87168; --subtask: #60c6d2; --warn: #fea362; --lozenge: #38414a;
 } }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #1d2125; --col: #161a1d; --card: #22272b; --ink: #dee4ea; --quiet: #9fadbc; --line: #38414a; --hover: #2c333a; --shadow: 0 1px 1px #03040480, 0 0 1px #03040480;
-  --accent: #579dff; --accent-ink: #1d2125; --accent-soft: #1c2b41; --drop: #09326c; --bad: #f87168; --done: #4bce97; --done-soft: #164b35;
-  --epic: #9f8fef; --story: #4bce97; --task: #579dff; --bug: #f87168; --subtask: #60c6d2; --warn: #fea362; --lozenge: #38414a;
+  --accent: #579dff; --accent-ink: #1d2125; --accent-soft: #1c2b41; --drop: #09326c; --bad: #fa8a82; --done: #4bce97; --done-soft: #164b35;
+  --epic: #ada2f2; --story: #4bce97; --task: #579dff; --bug: #f87168; --subtask: #60c6d2; --warn: #fea362; --lozenge: #38414a;
 }
 :root[data-theme="light"] { color-scheme: light; }
 * { box-sizing: border-box; }
@@ -23,6 +23,7 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -app
 #app { height: 100dvh; display: flex; flex-direction: column; }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); }
+::placeholder { color: var(--quiet); opacity: 1; }  /* the browser default grey is too faint on the dark theme */
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 [hidden] { display: none !important; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -253,4 +254,5 @@ li.tick > span { color: var(--done); }
 @media (max-width: 600px) { .tl-name { width: 128px; font-size: 13px; } .tl-name .t { white-space: normal; overflow-wrap: anywhere; } }
 .tl-note { color: var(--quiet); font-size: 12px; }
 /* Narrow phones: four tabs, the logo and two buttons cannot share a line, so the tabs get their own. */
-@media (max-width: 420px) { .top { flex-wrap: wrap; } .tabs { order: 9; flex: 1 0 100%; } .tabs button { flex: 1; } }
+@media (max-width: 420px) { .top { flex-wrap: wrap; } .tabs { order: 9; flex: 1 0 100%; } .tabs button { flex: 1; }
+  .top select.input { flex: 1 1 auto; max-width: none; } }  /* the project name gets the room the tabs left */

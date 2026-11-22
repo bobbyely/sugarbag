@@ -432,7 +432,7 @@ function drawTimeline(box) {
       : `<span class="tl-dot ${kind}${late ? " late" : ""}" data-from="${dayNumber(i.start || i.due) - from}"></span>`;
     const label = here ? `<span class="tl-when" data-from="${dayNumber(z || a) - from + 1}">${esc(statusName)}, ${esc(range)}</span>` : "";
     return `<button class="tl-row${head ? " head" : ""}${isDone(i) ? " is-done" : ""}" data-key="${esc(i.key)}" aria-label="${esc(i.key)} ${esc(i.title)}, ${esc(statusInfo(i.status)?.name || i.status)}, ${esc(range)}${late ? ", overdue" : ""}">
-      <span class="tl-name">${typeIcon(i.type)}<span class="t">${esc(i.title)}</span></span><span class="tl-track">${mark}${label}</span></button>`;
+      <span class="tl-name">${typeIcon(i.type)}<span class="t">${mdInline(i.title)}</span></span><span class="tl-track">${mark}${label}</span></button>`;
   };
   const body = shownGroups.map(g => {
     const title = g.e ? "" : '<div class="tl-loose">No epic</div>';

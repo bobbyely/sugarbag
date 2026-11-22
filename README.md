@@ -66,7 +66,7 @@ Everything is in the one SQLite file named by `SUGARBAG_DB`: people, password an
 
 ## What's safe to expose
 
-Sugarbag is meant to sit on your own machine or a private network, such as a home network or a VPN (WireGuard, Tailscale). It has no https of its own. To reach it from the internet, put a proxy with https in front (Caddy, nginx, Traefik), set `SUGARBAG_SECURE_COOKIE=1`, and keep the port itself closed. Logins are rate-limited per address, but it is built for a small team, not for heavy traffic. See `SECURITY.md`.
+Sugarbag is meant to sit on your own machine or a private network, such as a home network or a VPN (WireGuard, Tailscale). It has no https of its own. To reach it from the internet, put a proxy with https in front (Caddy, nginx, Traefik), set `SUGARBAG_SECURE_COOKIE=1`, and keep the port itself closed. The proxy must pass the original `Host` header through (in nginx, `proxy_set_header Host $host;`), because Sugarbag checks that a browser's changes come from its own address. Wrong passwords are rate-limited per address and name, but it is built for a small team, not for heavy traffic. See `SECURITY.md`.
 
 ## The API
 
