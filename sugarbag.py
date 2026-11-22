@@ -153,7 +153,9 @@ def too_many_failures(key):
     with failed_lock:
         for old in [k for k, times in failed_logins.items() if now - times[-1] >= 600]:
             del failed_logins[old]  # forget quiet keys, so the table can't grow for ever
-        return sum(now - t < 600 for t in failed_logins.get(key, [])) >= 10
+        if key in failed_logins:  # and old times in a key still in use, or one failure a minute would keep them all
+            failed_logins[key] = [t for t in failed_logins[key] if now - t < 600]
+        return len(failed_logins.get(key, [])) >= 10
 
 
 def note_failure(key):
@@ -411,8 +413,13 @@ def change_password(ctx):
     new = ctx.body.get("new")
     if not isinstance(new, str) or len(new) < 8:
         raise ApiError(400, "a password needs at least 8 characters")
+    hashed = hash_password(new)  # slow, so before taking the write lock
     with tx(ctx.conn) as c:
-        c.execute("UPDATE users SET password = ? WHERE id = ?", (hash_password(new), ctx.user["id"]))
+        # Another change may have landed while the old password was checked. Writing over it would undo it.
+        now_hash = c.execute("SELECT password FROM users WHERE id = ? AND active = 1", (ctx.user["id"],)).fetchone()
+        if not now_hash or now_hash["password"] != ctx.user["password"]:
+            raise ApiError(409, "your password was changed meanwhile: sign in again")
+        c.execute("UPDATE users SET password = ? WHERE id = ?", (hashed, ctx.user["id"]))
         # Sign out everywhere else, so a password change also shuts out whoever had a stolen session. Tokens stay: revoke those in Settings.
         c.execute("DELETE FROM sessions WHERE user_id = ? AND hash IS NOT ?", (ctx.user["id"], sha(ctx.session) if ctx.session else None))
     return {"ok": True}
@@ -472,7 +479,12 @@ def list_tokens(ctx):
 def add_token(ctx):
     label = text(ctx.body, "label", 80, True)
     token = "sugarbag_" + secrets.token_urlsafe(32)
-    ctx.conn.execute("INSERT INTO tokens (hash, user_id, label, created) VALUES (?,?,?,?)", (sha(token), ctx.user["id"], label, int(time.time())))
+    with tx(ctx.conn) as c:
+        # Switching someone off deletes their tokens; one made in the same moment must not slip through and work after.
+        if not c.execute("SELECT 1 FROM users WHERE id = ? AND active = 1", (ctx.user["id"],)).fetchone() or (
+                ctx.session and not c.execute("SELECT 1 FROM sessions WHERE hash = ?", (sha(ctx.session),)).fetchone()):
+            raise ApiError(401, "Please sign in.")
+        c.execute("INSERT INTO tokens (hash, user_id, label, created) VALUES (?,?,?,?)", (sha(token), ctx.user["id"], label, int(time.time())))
     return {"token": token, "label": label}
 
 

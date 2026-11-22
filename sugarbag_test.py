@@ -344,13 +344,67 @@ import subprocess  # noqa: E402
 if shutil.which("node"):
     md = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "md.js")
     check = """require(process.argv[1]); const N = 100000;
-    for (const piece of ["[", "[<", "[&", "[a](http://x", "**a", "`a", "~~a", "&", "- a\\n", "|a|\\n"]) {
+    if (!mdInline("[here](http://[::1]:8094/)").includes('href="http://[::1]:8094/"')) { console.log("IPv6 link lost"); process.exit(1); }
+    for (const piece of ["[", "[<", "[&", "[a](http://x", "[a](http://[::", "[a](http://[::1]x[", "**a", "`a", "~~a", "&", "- a\\n", "|a|\\n"]) {
       const t = Date.now(); mdToHtml(piece.repeat(N / piece.length)); const ms = Date.now() - t;
       if (ms > 200) { console.log(JSON.stringify(piece) + " took " + ms + " ms"); process.exit(1); } }"""
     slow = subprocess.run(["node", "-e", check, md], capture_output=True, text=True)
     assert slow.returncode == 0, slow.stdout + slow.stderr
 else:
     print("node not found: skipped the Markdown speed check")
+
+# Old wrong guesses drop out of a key that's still in use, so one a minute doesn't keep them all.
+import time  # noqa: E402
+sugarbag.failed_logins[("9.9.9.9", "x")] = [time.time() - 700] * 50 + [time.time()]
+assert not sugarbag.too_many_failures(("9.9.9.9", "x")) and len(sugarbag.failed_logins[("9.9.9.9", "x")]) == 1
+
+# A new password is hashed before the write lock is taken, so other writers aren't held up for it.
+real_hash = sugarbag.hash_password
+
+
+def hash_while_unlocked(password):
+    probe = sugarbag.sqlite3.connect(os.environ["SUGARBAG_DB"], timeout=0)
+    probe.execute("BEGIN IMMEDIATE")  # fails with "database is locked" if the lock is held
+    probe.execute("ROLLBACK")
+    probe.close()
+    return real_hash(password)
+
+
+sugarbag.hash_password = hash_while_unlocked
+ok(call("POST", "/api/password", {"old": "password-34", "new": "password-35"}, cookie=view))
+sugarbag.hash_password = real_hash
+
+# Two password changes at once: the one that checked the old password before the other landed must not overwrite it.
+def other_change_lands(password, stored):
+    sugarbag.check_password = real_check
+    db = sugarbag.connect()
+    db.execute("UPDATE users SET password = ? WHERE name = 'view'", (real_hash("password-36"),))
+    db.close()
+    return real_check(password, stored)
+
+
+sugarbag.check_password = other_change_lands
+assert call("POST", "/api/password", {"old": "password-35", "new": "password-99"}, cookie=view)[0] == 409
+assert sugarbag.check_password is real_check
+view = sign_in("view", "password-36")
+
+# A token being made while an admin switches the user off is refused, and nothing is left to work after switching back on.
+ok(call("POST", "/api/users", {"name": "tok", "password": "password-7", "role": "member"}, cookie=ann))
+tok = sign_in("tok", "password-7")
+real_urlsafe = sugarbag.secrets.token_urlsafe
+
+
+def switched_off_meanwhile(n):
+    sugarbag.secrets.token_urlsafe = real_urlsafe
+    ok(call("PATCH", "/api/users/tok", {"active": False}, cookie=ann))
+    return real_urlsafe(n)
+
+
+sugarbag.secrets.token_urlsafe = switched_off_meanwhile
+assert call("POST", "/api/tokens", {"label": "race"}, cookie=tok)[0] == 401
+assert sugarbag.secrets.token_urlsafe is real_urlsafe
+ok(call("PATCH", "/api/users/tok", {"active": True}, cookie=ann))
+assert not sugarbag.connect().execute("SELECT 1 FROM tokens t JOIN users u ON u.id = t.user_id WHERE u.name = 'tok'").fetchone()
 
 # A user name outside plain ASCII can still be managed from the page, which sends it percent-encoded.
 ok(call("POST", "/api/users", {"name": "José", "password": "password-5"}, cookie=ann))

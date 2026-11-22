@@ -25,6 +25,10 @@ Found by an audit before release, and fixed:
 - A connection that sends nothing is dropped after 30 seconds.
 - A ticket written to make the Markdown reader rescan (100,000 unclosed `[`) no longer freezes the page of whoever opens it: it renders in milliseconds, not seconds.
 - A sign-in that was already checking the password when the password changed no longer gets a session.
+- Two password changes at the same moment can no longer undo each other; the later one is refused.
+- A token made in the moment an admin switches its owner off is refused, so it can't work after they're switched back on.
+- Old wrong guesses drop out of the count even if someone keeps guessing slowly.
+- Changing a password no longer holds up everyone else's changes while the new one is hashed.
 
 ### Fixed
 
@@ -32,6 +36,7 @@ Found by an audit before release, and fixed:
 - Higher contrast for epic and overdue labels, the days-in-column count, quiet text and placeholders, in light and dark.
 - On a phone, the project menu uses the room beside it, so its name isn't cut short.
 - Timeline rows show a title's Markdown the way the board does.
+- Links to an IPv6 address such as `http://[::1]:8094/` work in descriptions and comments.
 
 ### Upgrading
 
