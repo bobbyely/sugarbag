@@ -2,7 +2,7 @@
 
 All notable changes to Sugarbag are written down here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-11-22
 
 The first public release: a small issue tracker with a Kanban board, for one person or a small team. One Python file, one SQLite database and one page, with nothing to install but Python.
 
@@ -43,3 +43,5 @@ Found by an audit before release, and fixed:
 ### Upgrading
 
 Nothing to do for a first release. Later versions upgrade the database themselves when they start, and only ever add to it. Back up the database file first anyway: see the README.
+
+[0.1.0]: https://github.com/bobbyely/sugarbag/releases/tag/v0.1.0

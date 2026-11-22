@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks Sugarbag's API against a real server on a spare port with a throwaway database. Run by hand or by GitHub.
 
-  python3 services/sugarbag/sugarbag_test.py
+  python3 sugarbag_test.py
 
 Reads and writes only a temporary folder. Takes a few seconds, because passwords are slow to hash on purpose.
 """
