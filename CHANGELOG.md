@@ -2,6 +2,18 @@
 
 All notable changes to Sugarbag are written down here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - unreleased
+
+### Added
+
+- **All projects:** one board, list, roadmap and timeline across every project, with a choice of which projects to show, kept for each person. Columns line up by their short name, and every done column becomes one Done.
+- **Column colours:** admins give a column one of eight named colours, or none, shown on its head. Each is checked by the tests for readable text in light and dark. The columns API takes `color`.
+- **Move to another project:** a ticket and everything under it get new keys in the other project, and the old keys keep working. In the page, the API (`POST /api/items/KEY/move-project`) and `sb.py move-project`.
+
+### Changed
+
+- Opening a list of thousands of tickets is quicker: comments are counted with an index, and the list and roadmap no longer search every ticket for each row's children.
+
 ## [0.1.0] - 2026-11-22
 
 The first public release: a small issue tracker with a Kanban board, for one person or a small team. One Python file, one SQLite database and one page, with nothing to install but Python.

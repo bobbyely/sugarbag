@@ -520,5 +520,120 @@ for length in (b"-1", b"lots"):
         assert s.recv(100).split(b" ")[1] == b"400"
 assert sugarbag.Handler.timeout
 
+# All projects: items from every project, or from a list of them; each person's hidden projects are kept, and checked.
+ok(call("POST", "/api/projects", {"key": "CD", "name": "Second"}, cookie=ann))
+ok(call("POST", "/api/items", {"project": "CD", "title": "over there"}, cookie=ann), 201)
+assert {i["project"] for i in ok(call("GET", "/api/items", cookie=view))} >= {"AB", "CD", "DW"}
+assert {i["project"] for i in ok(call("GET", "/api/items?project=cd,AB", cookie=view))} == {"AB", "CD"}
+assert {i["project"] for i in ok(call("GET", "/api/items?project=CD", cookie=view))} == {"CD"}
+assert call("GET", "/api/items?project=CD,ZZ", cookie=view)[0] == 404
+assert ok(call("PUT", "/api/me/projects", {"hidden": ["CD", "ZZ"]}, cookie=view)) == ["CD"]  # a viewer's own view; unknown keys dropped
+assert ok(call("GET", "/api/me", cookie=view))["hidden_projects"] == ["CD"]
+assert call("PUT", "/api/me/projects", {"hidden": "CD"}, cookie=view)[0] == 400
+
+# Moving to another project: a new key there, the old key still finds it, and everything under it comes too.
+ok(call("POST", "/api/projects", {"key": "MV", "name": "Moved to"}, cookie=ann))
+ok(call("PUT", "/api/projects/MV/columns", {"columns": [{"slug": "ideas", "name": "Ideas"}, {"name": "Doing"}, {"slug": "done", "name": "Done", "is_done": True}]}, cookie=ann))
+ok(call("POST", "/api/items", {"project": "MV", "title": "already here", "ref": "same"}, cookie=ann), 201)
+e = ok(call("POST", "/api/items", {"project": "AB", "type": "epic", "title": "Moving epic"}, cookie=ann), 201)["key"]
+s1 = ok(call("POST", "/api/items", {"project": "AB", "type": "story", "title": "Moving story", "parent": e, "status": "review", "labels": ["keep"]}, cookie=ann), 201)["key"]
+t1 = ok(call("POST", "/api/items", {"project": "AB", "type": "subtask", "title": "Moving step", "parent": s1, "status": "done"}, cookie=ann), 201)["key"]
+ok(call("POST", f"/api/items/{s1}/comments", {"body": "comes along"}, cookie=ann), 201)
+assert call("POST", f"/api/items/{e}/move-project", {"project": "MV"}, cookie=view)[0] == 403
+assert call("POST", f"/api/items/{t1}/move-project", {"project": "MV"}, cookie=ann)[0] == 400  # a sub-task stays with its parent
+assert call("POST", f"/api/items/{e}/move-project", {"project": "AB"}, cookie=ann)[0] == 400
+assert call("POST", f"/api/items/{e}/move-project", {"project": "ZZ"}, cookie=ann)[0] == 404
+moved = ok(call("POST", f"/api/items/{e}/move-project", {"project": "mv"}, cookie=ann))
+assert moved["key"] == "MV-2" and [m["to"] for m in moved["moved"]] == ["MV-2", "MV-3", "MV-4"] and [m["from"] for m in moved["moved"]] == [e, s1, t1]
+old_story = ok(call("GET", f"/api/items/{s1}", cookie=view))  # the old key answers with the item and its new key
+assert old_story["key"] == "MV-3" and old_story["parent"] == "MV-2" and old_story["labels"] == ["keep"] and old_story["comments"][0]["body"] == "comes along"
+assert old_story["status"] == "ideas"  # MV has no Review column, so it starts in the first
+assert ok(call("GET", f"/api/items/{t1}", cookie=view))["status"] == "done"  # a column of the same name keeps its place
+assert any(a["field"] == "project" and a["old"] == s1 and a["new"] == "MV-3" for a in old_story["activity"])
+assert ok(call("GET", "/api/items/MV-2", cookie=view))["subitems"][0]["key"] == "MV-3"
+assert ok(call("PATCH", f"/api/items/{s1}", {"title": "Edited by old key"}, cookie=ann))["key"] == "MV-3"
+assert int(ok(call("POST", "/api/items", {"project": "AB", "title": "after"}, cookie=ann), 201)["key"].split("-")[1]) > int(t1.split("-")[1])
+# A story under an epic moves alone and leaves the epic behind; moving back gives it a newer key, and every old key still works.
+e2 = ok(call("POST", "/api/items", {"project": "AB", "type": "epic", "title": "Stays"}, cookie=ann), 201)["key"]
+s2 = ok(call("POST", "/api/items", {"project": "AB", "type": "story", "title": "Leaves", "parent": e2}, cookie=ann), 201)["key"]
+there = ok(call("POST", f"/api/items/{s2}/move-project", {"project": "MV"}, cookie=ann))
+assert there["parent"] is None and ok(call("GET", f"/api/items/{e2}", cookie=ann))["children"] == 0
+back = ok(call("POST", f"/api/items/{there['key']}/move-project", {"project": "AB"}, cookie=ann))["key"]
+assert back != s2 and ok(call("GET", f"/api/items/{s2}", cookie=ann))["key"] == back == ok(call("GET", f"/api/items/{there['key']}", cookie=ann))["key"]
+# A clash of refs stops the whole move, so nothing is left half moved.
+clash = ok(call("POST", "/api/items", {"project": "AB", "type": "epic", "title": "Clash"}, cookie=ann), 201)["key"]
+ok(call("POST", "/api/items", {"project": "AB", "type": "story", "title": "Clash child", "parent": clash, "ref": "same"}, cookie=ann), 201)
+assert call("POST", f"/api/items/{clash}/move-project", {"project": "MV"}, cookie=ann)[0] == 409
+assert ok(call("GET", f"/api/items/{clash}", cookie=ann))["key"] == clash and len(ok(call("GET", f"/api/items/{clash}", cookie=ann))["subitems"]) == 1
+assert {"old": s1, "item": "MV-3"} in ok(call("GET", "/api/export", cookie=ann))["aliases"]
+# Deleting the item takes its old keys too; the command line moves as well.
+ok(call("DELETE", "/api/items/MV-2", cookie=ann))
+assert call("GET", f"/api/items/{e}", cookie=ann)[0] == 404 and call("GET", f"/api/items/{t1}", cookie=ann)[0] == 404
+cli = ok(call("POST", "/api/items", {"project": "AB", "title": "by cli"}, cookie=ann), 201)["key"]
+env["SUGARBAG_TOKEN"] = agent
+code, said, _ = sb("move-project", cli, "mv")
+assert code == 0 and said.startswith(f"{cli} is now MV-") and sb("show", cli)[1].startswith("MV-")
+
+# A column of the same name that is done in the new project counts as finishing it then, not when it was last finished.
+ok(call("POST", "/api/projects", {"key": "XD", "name": "Review is done"}, cookie=ann))
+ok(call("PUT", "/api/projects/XD/columns", {"columns": [{"slug": "ideas", "name": "Ideas"}, {"slug": "review", "name": "Review", "is_done": True}]}, cookie=ann))
+again = ok(call("POST", "/api/items", {"project": "AB", "title": "finished before"}, cookie=ann), 201)["key"]
+ok(call("POST", f"/api/items/{again}/move", {"status": "done"}, cookie=ann))
+ok(call("POST", f"/api/items/{again}/move", {"status": "review"}, cookie=ann))
+db = sugarbag.connect()
+db.execute("UPDATE activity SET at = at - 30 * 86400 WHERE item_id = (SELECT id FROM items WHERE num = ? AND project_id = (SELECT id FROM projects WHERE key = 'AB'))", (int(again.split("-")[1]),))
+db.close()
+landed = ok(call("POST", f"/api/items/{again}/move-project", {"project": "XD"}, cookie=ann))
+assert landed["status"] == "review" and landed["finished"] > time.time() - 60
+
+# Column colours: one of the named swatches or none, set with the columns. Leaving colour out keeps it.
+cols = lambda: {c["slug"]: c["color"] for c in next(p for p in ok(call("GET", "/api/projects", cookie=view)) if p["key"] == "MV")["statuses"]}  # noqa: E731
+assert set(cols().values()) == {None}
+base = [{"slug": "ideas", "name": "Ideas"}, {"slug": "doing", "name": "Doing"}, {"slug": "done", "name": "Done", "is_done": True}]
+ok(call("PUT", "/api/projects/MV/columns", {"columns": [dict(base[0], color="teal"), dict(base[1], color="red"), base[2]]}, cookie=ann))
+assert cols() == {"ideas": "teal", "doing": "red", "done": None}
+ok(call("PUT", "/api/projects/MV/columns", {"columns": [base[0], dict(base[1], color=None), base[2], {"name": "New", "color": "pink"}]}, cookie=ann))
+assert cols() == {"ideas": "teal", "doing": None, "done": None, "new": "pink"}
+for bad in ("#ff0000", "Teal", 3, ["red"]):
+    assert call("PUT", "/api/projects/MV/columns", {"columns": [dict(base[0], color=bad)]}, cookie=ann)[0] == 400
+assert call("PUT", "/api/projects/MV/columns", {"columns": [dict(base[0], color="red")]}, cookie=mem)[0] in (401, 403)
+
+# Every swatch, light and dark: the column head's text keeps AA (4.5:1) on its tint, and the band shows (3:1) against the page.
+import re  # noqa: E402
+css = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "style.css")).read()
+
+
+def block(start):
+    at = css.index(start)
+    return dict(re.findall(r"--([\w-]+):\s*(#(?:[0-9a-f]{6}|[0-9a-f]{3}))\b", css[at:css.index("}", at)]))
+
+
+light, dark = block(":root {"), block(':root[data-theme="dark"] {')
+assert block("@media (prefers-color-scheme: dark)") == dark  # the two dark themes must not drift apart
+tint = int(re.search(r"color-mix\(in srgb, var\(--tint\) (\d+)%, var\(--col\)\)", css)[1]) / 100
+
+
+def rgb(h):
+    h = h if len(h) == 7 else "#" + "".join(c * 2 for c in h[1:])  # #fff is #ffffff
+    return [int(h[i:i + 2], 16) for i in (1, 3, 5)]
+
+
+def contrast(a, b):
+    def lum(c):
+        c = [v / 255 for v in c]
+        c = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in c]
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+for theme in (light, dark):
+    for name in sugarbag.COLORS:
+        swatch = rgb(theme["c-" + name])
+        head = [round(s * tint + c * (1 - tint)) for s, c in zip(swatch, rgb(theme["col"]))]
+        for text in ("ink", "quiet"):
+            assert contrast(rgb(theme[text]), head) >= 4.5, (name, text)
+        assert contrast(swatch, rgb(theme["bg"])) >= 3 and contrast(swatch, rgb(theme["col"])) >= 3, name
+
 server.shutdown()
 print("sugarbag ok")

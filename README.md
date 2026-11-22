@@ -33,9 +33,12 @@ Or with Docker Compose: see `compose.example.yml`.
 ## What's in it
 
 - **Board:** starts with Ideas (the backlog), Selected for development, In progress, Blocked, Review and Done. Each project can have its own columns. Drag with a mouse. On a phone, rest a finger on a card first, so a swipe still scrolls.
+- **Column colours:** an admin can give each column one of eight colours (blue, teal, green, yellow, orange, red, pink, purple) in **Columns**, or **Reset colour** for none. It shows as a band and a light tint on the column's head, the same for everyone and in All projects too. A set list rather than any colour, so every one is checked to keep text readable in light and dark.
 - **Done stays short:** a done column shows only tickets finished in the last 14 days (finished means when it last moved into a column that was done at the time, or its last change if it was made there). **Show all N done** at the foot of the column lists every one, newest first, with a way back to the board.
 - **Levels:** Epic > Story, Task or Bug > Sub-task. Stories and tasks sit level, so nobody has to decide which contains which. A sub-task gets its own card while it's in a working column, past the first two and not finished, with its parent's name on it.
 - **Issues:** keys such as `ABO-12`, priority, assignee (the owner), a one-line next step such as "Ann tests it on the phone" (shown on the card under the title), labels, start and due dates, Markdown description, comments, history. An issue opens in the middle of the screen (`/#ABO-12`) or as its own page (`/?issue=ABO-12`).
+- **All projects:** pick **All projects** in the project menu for one board, list, roadmap and timeline across every project. Each card shows its key, so you can see which project it's in. Projects can have different columns, so the board lines them up by short name: each project's columns in its own order, the same short name sharing one column (most projects keep the starting six, so those line up), and every done column, whatever it's called, becoming one **Done** at the end. **Projects** above the board picks which projects to show, one or several; Sugarbag remembers your choice. The done window applies here too.
+- **Move to another project:** **Move to project…** at the foot of a ticket. It gets the next key in that project, and its old key keeps working: `/#ABO-12`, `?issue=ABO-12`, the API and `sb.py` all lead to the new one. Comments, history, labels and everything under it come along. It keeps its column if the new project has one with the same short name, otherwise it starts in the first. A story, task or bug leaves its epic behind. A sub-task can't move on its own: move its parent. Members and admins can move tickets; history records each move.
 - **List:** everything, nested, including epics and sub-tasks.
 - **Roadmap:** one row per epic: status, a progress bar with the count of finished stories, and its next step. Tap a row to open the epic; tap the arrow to show its stories. Epics sort by start date if set, then by title ("Stage 2" before "Stage 10"), and finished ones go last. Dates are not needed.
 - **Timeline:** dated epics, stories, tasks and bugs as bars from start to due on one time axis, grouped under their epic, with month labels and a line for today. Colour shows status (grey waiting, blue under way, green done); a red outline means overdue. A ticket with one date gets a dot; a start after the due date is drawn from the earlier day and marked "dates reversed". The chart covers five years either side of today; items with dates further out are listed under it. Tap a row to open it. Items with no dates are listed under the chart; set start and due in a ticket's details to add one. Search and filters apply. No zoom or dragging.
@@ -78,15 +81,16 @@ JSON. Sign in with `Authorization: Bearer <token>`. Make a token in the page's s
 | `GET /health`, `GET /info` | Is it working; name and version. No login. |
 | `GET /api/projects` | Projects and their columns, each with `count`, the number of items in it. |
 | `POST /api/projects` | `{key, name}`. Admin. |
-| `PUT /api/projects/ABO/columns` | `{columns: [{slug, name, is_done}], move: {old_slug: new_slug}}`: the whole list, in order. Leave out `slug` for a new column. A removed column with items in it needs a `move`. Admin. |
-| `GET /api/items?project=ABO` | Items, each with its `epic` (a sub-task's too). Also `status`, `type`, `assignee`, `label`, `parent`, `ref`, `q`. `done_days=14` leaves out done items finished more than 14 days ago (epics stay); without it you get everything. Each item has `finished`: when it was finished, or null if it isn't done. |
+| `PUT /api/projects/ABO/columns` | `{columns: [{slug, name, is_done, color}], move: {old_slug: new_slug}}`: the whole list, in order. Leave out `slug` for a new column. `color` is `blue`, `teal`, `green`, `yellow`, `orange`, `red`, `pink`, `purple` or `null`; left out, a column keeps its colour. A removed column with items in it needs a `move`. Admin. |
+| `GET /api/items?project=ABO` | Items, each with its `epic` (a sub-task's too). Leave out `project` for every project, or list several: `project=ABO,XYZ`. Also `status`, `type`, `assignee`, `label`, `parent`, `ref`, `q`. `done_days=14` leaves out done items finished more than 14 days ago (epics stay); without it you get everything. Each item has `finished`: when it was finished, or null if it isn't done. |
 | `POST /api/items` | `{project, title, type, parent, status, priority, assignee, next, labels, start, due, body, ref}`. `ref` is your own unique name for it: sending the same one twice gets a 409, so a script is safe to rerun. |
 | `GET /api/items/ABO-12` | One item, with its sub-items, comments and history. |
 | `PATCH /api/items/ABO-12` | Change any of those fields. |
 | `POST /api/items/ABO-12/move` | `{status, before}`: to a column, above the card `before`, or at the bottom. |
+| `POST /api/items/ABO-12/move-project` | `{project}`: to another project, with everything under it. Answers with the item at its new key, and `moved`: each `{from, to}` key. An old key still works in every call. |
 | `DELETE /api/items/ABO-12` | Creator or admin. Takes its sub-items too. |
 | `POST /api/items/ABO-12/comments` | `{body}`. |
-| `GET /api/me`, `PATCH /api/me`, `PUT /api/me/hidden/ABO` | You. Change your name with `{name}`, and the board's days of finished work with `{done_days}` (0 to 3650, 0 for all; default 14). Set columns you hide on a project's board with `{columns: [slug]}`. |
+| `GET /api/me`, `PATCH /api/me`, `PUT /api/me/hidden/ABO`, `PUT /api/me/projects` | You. Change your name with `{name}`, and the board's days of finished work with `{done_days}` (0 to 3650, 0 for all; default 14). Set columns you hide on a project's board with `{columns: [slug]}`, and projects you leave out of All projects with `{hidden: [key]}`. |
 | `GET /api/users`, `POST /api/users`, `PATCH /api/users/<name>` | People. Changes need an admin. |
 | `GET /api/tokens`, `POST /api/tokens`, `DELETE /api/tokens/<id>` | Your own tokens. |
 | `GET /api/export` | Everything except passwords and tokens. Admin. |
@@ -99,7 +103,7 @@ curl -H "Authorization: Bearer $SUGARBAG_TOKEN" -H "Content-Type: application/js
 
 ## From the command line
 
-`sb.py` wraps the API for agents and scripts (`--next "..."` sets the next step; `list --who NAME` shows one person's tickets): `sb.py list`, `show`, `new`, `move`, `comment`, `edit`, `columns`, `watch`. `watch` waits for a new comment or a move, so agents can talk through a ticket.
+`sb.py` wraps the API for agents and scripts (`--next "..."` sets the next step; `list --who NAME` shows one person's tickets): `sb.py list`, `show`, `new`, `move`, `move-project`, `comment`, `edit`, `columns`, `watch`. `watch` waits for a new comment or a move, so agents can talk through a ticket.
 
 Its settings come from the environment, or from `~/.config/sugarbag/env` as `KEY=value` lines (keep that file private, `chmod 600`): `SUGARBAG_URL` (default `http://127.0.0.1:8094`), `SUGARBAG_TOKEN` and `SUGARBAG_PROJECT` (the project key, so you needn't type it each time).
 

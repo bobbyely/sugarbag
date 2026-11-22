@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 PAGES = {"/": "index.html", "/app.js": "app.js", "/md.js": "md.js", "/style.css": "style.css",
@@ -42,6 +42,9 @@ PAGES = {"/": "index.html", "/app.js": "app.js", "/md.js": "md.js", "/style.css"
 TYPES = ("epic", "story", "task", "bug", "subtask")
 PRIORITIES = ("highest", "high", "medium", "low", "lowest")
 ROLES = ("admin", "member", "viewer")
+# A column's colour is one of these names, never a free value, so every one can be checked for contrast in light and dark.
+# The values are --c-<name> in static/style.css.
+COLORS = ("blue", "teal", "green", "yellow", "orange", "red", "pink", "purple")
 DEFAULT_STATUSES = (("ideas", "Ideas", 0), ("selected", "Selected for development", 0),
                     ("in_progress", "In progress", 0), ("blocked", "Blocked", 0), ("review", "Review", 0), ("done", "Done", 1))
 MAX_BODY = 1_000_000
@@ -51,13 +54,13 @@ KEY = re.compile(r"^([A-Z][A-Z0-9]{1,9})-(\d+)$")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
   password TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL, hidden_columns TEXT NOT NULL DEFAULT '{}',
-  done_days INTEGER NOT NULL DEFAULT 14);
+  done_days INTEGER NOT NULL DEFAULT 14, hidden_projects TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS tokens (id INTEGER PRIMARY KEY, hash TEXT NOT NULL UNIQUE, user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   label TEXT NOT NULL, created INTEGER NOT NULL, last_used INTEGER);
 CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, next_num INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS statuses (project_id INTEGER NOT NULL REFERENCES projects ON DELETE CASCADE, slug TEXT NOT NULL, name TEXT NOT NULL,
-  position INTEGER NOT NULL, is_done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (project_id, slug));
+  position INTEGER NOT NULL, is_done INTEGER NOT NULL DEFAULT 0, color TEXT, PRIMARY KEY (project_id, slug));
 CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects ON DELETE CASCADE, num INTEGER NOT NULL,
   type TEXT NOT NULL, parent_id INTEGER REFERENCES items ON DELETE CASCADE, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'medium', assignee_id INTEGER REFERENCES users ON DELETE SET NULL,
@@ -71,6 +74,9 @@ CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, item_id INTEGER NOT
 CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES items ON DELETE CASCADE,
   user_id INTEGER REFERENCES users ON DELETE SET NULL, field TEXT NOT NULL, old TEXT, new TEXT, at INTEGER NOT NULL, done INTEGER);
 CREATE INDEX IF NOT EXISTS activity_item ON activity (item_id, field);
+CREATE INDEX IF NOT EXISTS comments_item ON comments (item_id);
+CREATE TABLE IF NOT EXISTS item_aliases (project_id INTEGER NOT NULL REFERENCES projects ON DELETE CASCADE, num INTEGER NOT NULL,
+  item_id INTEGER NOT NULL REFERENCES items ON DELETE CASCADE, PRIMARY KEY (project_id, num));
 """
 
 log = logging.getLogger("sugarbag")
@@ -103,10 +109,14 @@ def upgrade(conn):
         conn.execute("ALTER TABLE users ADD COLUMN hidden_columns TEXT NOT NULL DEFAULT '{}'")
     if not has("users", "done_days"):
         conn.execute("ALTER TABLE users ADD COLUMN done_days INTEGER NOT NULL DEFAULT 14")
+    if not has("users", "hidden_projects"):  # projects left out of this person's All projects view
+        conn.execute("ALTER TABLE users ADD COLUMN hidden_projects TEXT NOT NULL DEFAULT '[]'")
     if not has("activity", "done"):  # whether a move went into a done column, kept as it was then
         conn.execute("ALTER TABLE activity ADD COLUMN done INTEGER")
         conn.execute("""UPDATE activity SET done = (SELECT s.is_done FROM items i JOIN statuses s ON s.project_id = i.project_id AND s.slug = activity.new
                         WHERE i.id = activity.item_id) WHERE field = 'status'""")  # older moves: the best guess is today's columns
+    if not has("statuses", "color"):
+        conn.execute("ALTER TABLE statuses ADD COLUMN color TEXT")
     if not has("items", "next"):
         conn.execute("ALTER TABLE items ADD COLUMN next TEXT NOT NULL DEFAULT ''")
     if not has("items", "status_since"):
@@ -256,8 +266,12 @@ def find_project(conn, key):
 
 
 def find_item(conn, key):
+    """An item by its key, or by a key it had before it moved to another project. A project's numbers only go up, so an
+    old key can never belong to a newer item too."""
     m = KEY.match(key or "")
-    row = m and conn.execute("SELECT i.* FROM items i JOIN projects p ON p.id = i.project_id WHERE p.key = ? AND i.num = ?", (m[1], int(m[2]))).fetchone()
+    row = m and (conn.execute("SELECT i.* FROM items i JOIN projects p ON p.id = i.project_id WHERE p.key = ? AND i.num = ?", (m[1], int(m[2]))).fetchone()
+                 or conn.execute("""SELECT i.* FROM item_aliases a JOIN projects p ON p.id = a.project_id JOIN items i ON i.id = a.item_id
+                                    WHERE p.key = ? AND a.num = ?""", (m[1], int(m[2]))).fetchone())
     if not row:
         raise ApiError(404, f"no item {key}")
     return row
@@ -268,7 +282,7 @@ def load_item(conn, item_id):
 
 
 def statuses_of(conn, project_id):
-    return [dict(r) for r in conn.execute("SELECT slug, name, position, is_done FROM statuses WHERE project_id = ? ORDER BY position", (project_id,))]
+    return [dict(r) for r in conn.execute("SELECT slug, name, position, is_done, color FROM statuses WHERE project_id = ? ORDER BY position", (project_id,))]
 
 
 def check_status(conn, project_id, slug):
@@ -412,9 +426,14 @@ def logout(ctx):
     return {"ok": True}
 
 
+def my_view(row):
+    return dict(public_user(row), hidden=json.loads(row["hidden_columns"]), done_days=row["done_days"],
+                hidden_projects=json.loads(row["hidden_projects"]))
+
+
 @route("GET", "/api/me")
 def me(ctx):
-    return dict(public_user(ctx.user), hidden=json.loads(ctx.user["hidden_columns"]), done_days=ctx.user["done_days"])
+    return my_view(ctx.user)
 
 
 @route("PATCH", "/api/me")
@@ -432,8 +451,7 @@ def rename_me(ctx):
         raise ApiError(409, "that name is taken") from None
     if name != ctx.user["name"]:
         log.info("user renamed: %s to %s", ctx.user["name"], name)
-    row = ctx.conn.execute("SELECT * FROM users WHERE id = ?", (ctx.user["id"],)).fetchone()
-    return dict(public_user(row), hidden=json.loads(row["hidden_columns"]), done_days=row["done_days"])
+    return my_view(ctx.conn.execute("SELECT * FROM users WHERE id = ?", (ctx.user["id"],)).fetchone())
 
 
 @route("PUT", "/api/me/hidden/([^/]+)")
@@ -450,6 +468,19 @@ def hide_columns(ctx, key):
         hidden[key] = sorted(set(columns) & known)
         c.execute("UPDATE users SET hidden_columns = ? WHERE id = ?", (json.dumps(hidden), ctx.user["id"]))
     return hidden[key]
+
+
+@route("PUT", "/api/me/projects")
+def hide_projects(ctx):
+    """Which projects this person leaves out of the All projects view. A list of what's hidden, so a new project shows up by itself."""
+    keys = ctx.body.get("hidden")
+    if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+        raise ApiError(400, "hidden must be a list of project keys")
+    with tx(ctx.conn) as c:
+        known = {r["key"] for r in c.execute("SELECT key FROM projects")}
+        hidden = sorted(set(keys) & known)
+        c.execute("UPDATE users SET hidden_projects = ? WHERE id = ?", (json.dumps(hidden), ctx.user["id"]))
+    return hidden
 
 
 @route("POST", "/api/password")
@@ -565,7 +596,7 @@ def add_project(ctx):
         except sqlite3.IntegrityError:
             raise ApiError(409, "that key is taken") from None
         for pos, (slug, label, done) in enumerate(DEFAULT_STATUSES):
-            c.execute("INSERT INTO statuses VALUES (?,?,?,?,?)", (pid, slug, label, pos, done))
+            c.execute("INSERT INTO statuses (project_id, slug, name, position, is_done) VALUES (?,?,?,?,?)", (pid, slug, label, pos, done))
     return {"key": key, "name": name, "statuses": statuses_of(ctx.conn, pid)}
 
 
@@ -590,7 +621,11 @@ def set_columns(ctx, key):
                 raise ApiError(400, f"no column {slug} in this project")
             if slug is not None and slug in [r[0] for r in rows]:
                 raise ApiError(400, f"column {slug} is listed twice")
-            rows.append([slug, name, 1 if col.get("is_done") else 0])
+            # Left out, a column keeps its colour, so a script that only renames columns doesn't wipe them.
+            color = col["color"] if "color" in col else old[slug]["color"] if slug else None
+            if color is not None and color not in COLORS:
+                raise ApiError(400, f"a column's colour is one of {', '.join(COLORS)}, or null")
+            rows.append([slug, name, 1 if col.get("is_done") else 0, color])
         kept = {r[0] for r in rows if r[0]}
         for r in rows:  # a new column's slug comes from its name, kept unique, and never changes after that
             if not r[0]:
@@ -605,8 +640,8 @@ def set_columns(ctx, key):
             if count and target not in kept:
                 raise ApiError(400, f"{old[slug]['name']} has {count} items: say which column they move to")
         c.execute("DELETE FROM statuses WHERE project_id = ?", (project["id"],))
-        for pos, (slug, name, done) in enumerate(rows):
-            c.execute("INSERT INTO statuses VALUES (?,?,?,?,?)", (project["id"], slug, name, pos, done))
+        for pos, (slug, name, done, color) in enumerate(rows):
+            c.execute("INSERT INTO statuses (project_id, slug, name, position, is_done, color) VALUES (?,?,?,?,?,?)", (project["id"], slug, name, pos, done, color))
         for slug in set(old) - kept:
             items = c.execute("SELECT id FROM items WHERE project_id = ? AND status = ? ORDER BY position", (project["id"], slug)).fetchall()
             for row in items:
@@ -618,8 +653,10 @@ def set_columns(ctx, key):
 
 @route("GET", "/api/items")
 def list_items(ctx):
-    project = find_project(ctx.conn, ctx.query.get("project", ""))
-    where, args = ["i.project_id = ?"], [project["id"]]
+    # No project means every project; several are separated by commas (AB,CD), for the All projects view.
+    keys = [k for k in ctx.query.get("project", "").upper().split(",") if k]
+    ids = [find_project(ctx.conn, k)["id"] for k in keys]
+    where, args = [f"i.project_id IN ({','.join('?' * len(ids))})" if ids else "1"], ids
     for field, column in (("status", "i.status"), ("type", "i.type"), ("ref", "i.ref"), ("assignee", "u.name")):
         if field in ctx.query:
             where.append(f"{column} = ?")
@@ -636,7 +673,7 @@ def list_items(ctx):
         if days:
             where.append(f"(i.type = 'epic' OR COALESCE({FINISHED}, 1e18) >= ?)")
             args.append(int(time.time()) - days * 86400)
-    # shortcut: no paging, fine for thousands of items in one small team's project, add limit and offset past that.
+    # shortcut: no paging, fine for 5,000 items across projects (about 0.1 s), add limit and offset past that.
     rows = ctx.conn.execute(ITEM_SELECT + " WHERE " + " AND ".join(where) + " ORDER BY i.position", args).fetchall()
     items = [item_json(r) for r in rows]
     if "label" in ctx.query:
@@ -760,6 +797,52 @@ def move_item(ctx, key):
     return load_item(ctx.conn, row["id"])
 
 
+@route("POST", "/api/items/([^/]+)/move-project", "member")
+def move_to_project(ctx, key):
+    """Moves an item and everything under it to another project, where each gets the next free key. The old keys keep
+    finding them. Comments, history and labels belong to the item, so they come along. A column of the same short name
+    keeps its place; otherwise it starts in the first column. A story, task or bug leaves its epic behind, since an epic
+    is a theme of the old project. A sub-task can't leave its parent, so it's refused: move the parent instead."""
+    with tx(ctx.conn) as c:
+        row = find_item(c, key)
+        target = find_project(c, text(ctx.body, "project", 10, True).upper())
+        if target["id"] == row["project_id"]:
+            raise ApiError(400, f"it's already in {target['key']}")
+        if row["type"] == "subtask":
+            raise ApiError(400, "a sub-task moves with its parent: move that instead")
+        old = c.execute("SELECT key FROM projects WHERE id = ?", (row["project_id"],)).fetchone()["key"]
+        columns = statuses_of(c, target["id"])
+        was_done = {s["slug"]: s["is_done"] for s in statuses_of(c, row["project_id"])}
+        now_done = {s["slug"]: s["is_done"] for s in columns}
+        # Parents before children, so keys run in reading order in the new project.
+        tree = c.execute("""WITH RECURSIVE tree(id, depth) AS (SELECT id, 0 FROM items WHERE id = ?
+                            UNION ALL SELECT i.id, t.depth + 1 FROM items i JOIN tree t ON i.parent_id = t.id)
+                            SELECT i.* FROM tree t JOIN items i ON i.id = t.id ORDER BY t.depth, i.num""", (row["id"],)).fetchall()
+        num, now, moved = target["next_num"], int(time.time()), []
+        for item in tree:
+            status = item["status"] if item["status"] in now_done else columns[0]["slug"]
+            # A column of the same name can be done in one project and not the other; that counts as a move, so the
+            # board's record of when work was finished stays true.
+            moves = status != item["status"] or now_done[status] != was_done.get(item["status"])
+            c.execute("INSERT OR REPLACE INTO item_aliases (project_id, num, item_id) VALUES (?,?,?)", (item["project_id"], item["num"], item["id"]))
+            try:
+                c.execute("UPDATE items SET project_id = ?, num = ?, status = ?, position = ?, status_since = ?, updated = ? WHERE id = ?",
+                          (target["id"], num, status, bottom_of(c, target["id"], status), now if moves else item["status_since"], now, item["id"]))
+            except sqlite3.IntegrityError:  # its ref, a script's own name for it, is taken there
+                raise ApiError(409, f"{target['key']} already has an item with ref {item['ref']}") from None
+            moved.append({"from": f"{old}-{item['num']}", "to": f"{target['key']}-{num}"})
+            record(c, item["id"], ctx.user["id"], "project", moved[-1]["from"], moved[-1]["to"])
+            if moves:
+                record(c, item["id"], ctx.user["id"], "status", item["status"], status)
+            num += 1
+        if row["parent_id"] is not None:
+            record(c, row["id"], ctx.user["id"], "parent_id", row["parent_id"], None)
+            c.execute("UPDATE items SET parent_id = NULL WHERE id = ?", (row["id"],))
+        c.execute("UPDATE projects SET next_num = ? WHERE id = ?", (num, target["id"]))
+    log.info("moved %s to %s (%d items) by %s", moved[0]["from"], moved[0]["to"], len(moved), ctx.user["name"])
+    return dict(load_item(ctx.conn, row["id"]), moved=moved)
+
+
 @route("DELETE", "/api/items/([^/]+)", "member")
 def del_item(ctx, key):
     with tx(ctx.conn) as c:
@@ -792,6 +875,9 @@ def export(ctx):
     """Everything except passwords and tokens, so nobody is stuck with Sugarbag."""
     out = {"version": VERSION, "users": [public_user(r) for r in ctx.conn.execute("SELECT * FROM users")], "projects": list_projects(ctx)}
     out["items"] = [item_json(r) for r in ctx.conn.execute(ITEM_SELECT + " ORDER BY i.project_id, i.num")]
+    out["aliases"] = [dict(r) for r in ctx.conn.execute(
+        """SELECT p.key || '-' || a.num AS old, q.key || '-' || i.num AS item FROM item_aliases a JOIN projects p ON p.id = a.project_id
+           JOIN items i ON i.id = a.item_id JOIN projects q ON q.id = i.project_id ORDER BY a.project_id, a.num""")]
     out["comments"] = [dict(r) for r in ctx.conn.execute(
         "SELECT p.key || '-' || i.num AS item, u.name AS user, c.body, c.at FROM comments c JOIN items i ON i.id = c.item_id JOIN projects p ON p.id = i.project_id LEFT JOIN users u ON u.id = c.user_id ORDER BY c.id")]
     return out
