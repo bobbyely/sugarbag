@@ -306,10 +306,148 @@ assert sb("show", "AB-99999")[0] != 0
 env["SUGARBAG_TOKEN"] = ""
 assert "No token" in sb("list")[2]
 
-# Too many wrong passwords.
+# Too many wrong passwords. Only that name is locked: behind a proxy everyone shares one address.
 for _ in range(10):
     call("POST", "/api/login", {"name": "ann", "password": "wrong"})
 assert call("POST", "/api/login", {"name": "ann", "password": "password-1"})[0] == 429
+assert call("POST", "/api/login", {"name": "Ann", "password": "password-1"})[0] == 429  # same name in other letters
+sign_in("view", "password-3")
+
+# Changing your password signs you out everywhere else.
+other = sign_in("view", "password-3")
+ok(call("POST", "/api/password", {"old": "password-3", "new": "password-33"}, cookie=view))
+assert ok(call("GET", "/api/me", cookie=view))["name"] == "view"  # the session that changed it stays
+assert call("GET", "/api/me", cookie=other)[0] == 401
+
+# A login whose password check was already running when the password changed gets no session.
+real_check = sugarbag.check_password
+
+
+def change_midway(password, stored):
+    good = real_check(password, stored)
+    sugarbag.check_password = real_check
+    db = sugarbag.connect()
+    db.execute("UPDATE users SET password = ? WHERE name = 'view'", (sugarbag.hash_password("password-34"),))
+    db.execute("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE name = 'view')")
+    db.close()
+    return good
+
+
+sugarbag.check_password = change_midway
+assert call("POST", "/api/login", {"name": "view", "password": "password-33"})[0] == 401
+assert sugarbag.check_password is real_check
+view = sign_in("view", "password-34")
+
+# Markdown is read in one pass: 100,000 characters shaped to make a careless pattern rescan the line render quickly.
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+if shutil.which("node"):
+    md = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "md.js")
+    check = """require(process.argv[1]); const N = 100000;
+    if (!mdInline("[here](http://[::1]:8094/)").includes('href="http://[::1]:8094/"')) { console.log("IPv6 link lost"); process.exit(1); }
+    for (const piece of ["[", "[<", "[&", "[a](http://x", "[a](http://[::", "[a](http://[::1]x[", "**a", "`a", "~~a", "&", "- a\\n", "|a|\\n"]) {
+      const t = Date.now(); mdToHtml(piece.repeat(N / piece.length)); const ms = Date.now() - t;
+      if (ms > 200) { console.log(JSON.stringify(piece) + " took " + ms + " ms"); process.exit(1); } }"""
+    slow = subprocess.run(["node", "-e", check, md], capture_output=True, text=True)
+    assert slow.returncode == 0, slow.stdout + slow.stderr
+else:
+    print("node not found: skipped the Markdown speed check")
+
+# Old wrong guesses drop out of a key that's still in use, so one a minute doesn't keep them all.
+import time  # noqa: E402
+sugarbag.failed_logins[("9.9.9.9", "x")] = [time.time() - 700] * 50 + [time.time()]
+assert not sugarbag.too_many_failures(("9.9.9.9", "x")) and len(sugarbag.failed_logins[("9.9.9.9", "x")]) == 1
+
+# A new password is hashed before the write lock is taken, so other writers aren't held up for it.
+real_hash = sugarbag.hash_password
+
+
+def hash_while_unlocked(password):
+    probe = sugarbag.sqlite3.connect(os.environ["SUGARBAG_DB"], timeout=0)
+    probe.execute("BEGIN IMMEDIATE")  # fails with "database is locked" if the lock is held
+    probe.execute("ROLLBACK")
+    probe.close()
+    return real_hash(password)
+
+
+sugarbag.hash_password = hash_while_unlocked
+ok(call("POST", "/api/password", {"old": "password-34", "new": "password-35"}, cookie=view))
+sugarbag.hash_password = real_hash
+
+# Two password changes at once: the one that checked the old password before the other landed must not overwrite it.
+def other_change_lands(password, stored):
+    sugarbag.check_password = real_check
+    db = sugarbag.connect()
+    db.execute("UPDATE users SET password = ? WHERE name = 'view'", (real_hash("password-36"),))
+    db.close()
+    return real_check(password, stored)
+
+
+sugarbag.check_password = other_change_lands
+assert call("POST", "/api/password", {"old": "password-35", "new": "password-99"}, cookie=view)[0] == 409
+assert sugarbag.check_password is real_check
+view = sign_in("view", "password-36")
+
+# A token being made while an admin switches the user off is refused, and nothing is left to work after switching back on.
+ok(call("POST", "/api/users", {"name": "tok", "password": "password-7", "role": "member"}, cookie=ann))
+tok = sign_in("tok", "password-7")
+real_urlsafe = sugarbag.secrets.token_urlsafe
+
+
+def switched_off_meanwhile(n):
+    sugarbag.secrets.token_urlsafe = real_urlsafe
+    ok(call("PATCH", "/api/users/tok", {"active": False}, cookie=ann))
+    return real_urlsafe(n)
+
+
+sugarbag.secrets.token_urlsafe = switched_off_meanwhile
+assert call("POST", "/api/tokens", {"label": "race"}, cookie=tok)[0] == 401
+assert sugarbag.secrets.token_urlsafe is real_urlsafe
+ok(call("PATCH", "/api/users/tok", {"active": True}, cookie=ann))
+assert not sugarbag.connect().execute("SELECT 1 FROM tokens t JOIN users u ON u.id = t.user_id WHERE u.name = 'tok'").fetchone()
+
+# A token revoked while a request signed in with it is making a new one: refused, and no new token is left.
+tok = sign_in("tok", "password-7")  # switching off signed it out
+token_a = ok(call("POST", "/api/tokens", {"label": "A"}, cookie=tok))["token"]
+a_id = ok(call("GET", "/api/tokens", cookie=tok))[-1]["id"]
+
+
+def revoked_meanwhile(n):
+    sugarbag.secrets.token_urlsafe = real_urlsafe
+    ok(call("DELETE", f"/api/tokens/{a_id}", cookie=tok))
+    return real_urlsafe(n)
+
+
+sugarbag.secrets.token_urlsafe = revoked_meanwhile
+assert call("POST", "/api/tokens", {"label": "B"}, token=token_a)[0] == 401
+assert sugarbag.secrets.token_urlsafe is real_urlsafe and ok(call("GET", "/api/tokens", cookie=tok)) == []
+
+# The same for an admin's token while it adds a person.
+token_admin = ok(call("POST", "/api/tokens", {"label": "admin"}, cookie=ann))["token"]
+admin_id = ok(call("GET", "/api/tokens", cookie=ann))[-1]["id"]
+
+
+def admin_token_revoked(password):
+    sugarbag.hash_password = real_hash
+    ok(call("DELETE", f"/api/tokens/{admin_id}", cookie=ann))
+    return real_hash(password)
+
+
+sugarbag.hash_password = admin_token_revoked
+assert call("POST", "/api/users", {"name": "late", "password": "password-8"}, token=token_admin)[0] == 401
+assert sugarbag.hash_password is real_hash and "late" not in [u["name"] for u in ok(call("GET", "/api/users", cookie=ann))]
+
+# A user name outside plain ASCII can still be managed from the page, which sends it percent-encoded.
+ok(call("POST", "/api/users", {"name": "José", "password": "password-5"}, cookie=ann))
+assert ok(call("PATCH", "/api/users/Jos%C3%A9", {"role": "viewer"}, cookie=ann))["role"] == "viewer"
+
+# A body length the server can't trust is refused before anything is read, and a silent connection is let go.
+import socket  # noqa: E402
+for length in (b"-1", b"lots"):
+    with socket.create_connection(("127.0.0.1", server.server_address[1])) as s:
+        s.sendall(b"POST /api/login HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: " + length + b"\r\n\r\n{}")
+        assert s.recv(100).split(b" ")[1] == b"400"
+assert sugarbag.Handler.timeout
 
 server.shutdown()
 print("sugarbag ok")

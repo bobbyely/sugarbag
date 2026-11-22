@@ -4,14 +4,31 @@ A small issue tracker with a Kanban board, for one person or a small team: issue
 
 One Python file, one SQLite database, one page. Nothing to install except Python 3.11 or newer, and no outside scripts.
 
-## Try it
+![A Sugarbag board with six columns of cards, in light mode](docs/board.png)
+
+A personal project, maintained in spare time. Bug reports are welcome; it stays small on purpose.
+
+## Quick start
+
+With Python 3.11 or newer, from a copy of this repo:
 
 ```bash
-python3 sugarbag.py adduser yourname   # asks for a password; the first user should be an admin
+python3 sugarbag.py adduser yourname   # asks for a password; the first user is an admin
 python3 sugarbag.py                    # then open http://127.0.0.1:8094
 ```
 
-Or with Docker: see `compose.example.yml`.
+Sign in, press **New project**, give it a key such as `ABO` and a name, and start adding tickets.
+
+With Docker:
+
+```bash
+mkdir data && sudo chown 1000:1000 data
+docker run -d --name sugarbag --user 1000:1000 -p 127.0.0.1:8094:8094 \
+  -v "$PWD/data:/data" ghcr.io/bobbyely/sugarbag:0.1.0
+docker exec -it sugarbag python3 /app/sugarbag.py adduser yourname
+```
+
+Or with Docker Compose: see `compose.example.yml`.
 
 ## What's in it
 
@@ -33,7 +50,23 @@ Or with Docker: see `compose.example.yml`.
 
 ## Settings
 
-All from the environment. See the top of `sugarbag.py`: `SUGARBAG_DB`, `SUGARBAG_BIND`, `SUGARBAG_PORT`, `SUGARBAG_NAME`, `SUGARBAG_SECURE_COOKIE`.
+All from the environment.
+
+| Setting | What it does | Default |
+| --- | --- | --- |
+| `SUGARBAG_DB` | The database file. | `sugarbag.db` beside `sugarbag.py` (`/data/sugarbag.db` in the image) |
+| `SUGARBAG_BIND` | The address to listen on. | `127.0.0.1` (`0.0.0.0` in the image) |
+| `SUGARBAG_PORT` | The port. | `8094` |
+| `SUGARBAG_NAME` | The name shown on the page and at `/info`. | `Sugarbag` |
+| `SUGARBAG_SECURE_COOKIE` | Set to `1` when people reach it over https, so the login cookie is only sent over https. | off |
+
+## Where your data lives
+
+Everything is in the one SQLite file named by `SUGARBAG_DB`: people, password and token fingerprints, projects, tickets, comments and history. The image keeps it in `/data`, so mount a folder there. A newer Sugarbag upgrades the file itself when it starts, and only ever adds to it.
+
+## What's safe to expose
+
+Sugarbag is meant to sit on your own machine or a private network, such as a home network or a VPN (WireGuard, Tailscale). It has no https of its own. To reach it from the internet, put a proxy with https in front (Caddy, nginx, Traefik), set `SUGARBAG_SECURE_COOKIE=1`, and keep the port itself closed. The proxy must pass the original `Host` header through (in nginx, `proxy_set_header Host $host;`), because Sugarbag checks that a browser's changes come from its own address. Wrong passwords are rate-limited per address and name, but it is built for a small team, not for heavy traffic. See `SECURITY.md`.
 
 ## The API
 
@@ -65,16 +98,22 @@ curl -H "Authorization: Bearer $SUGARBAG_TOKEN" -H "Content-Type: application/js
 
 ## From the command line
 
-`sb.py` wraps the API for agents and scripts (`--next "..."` sets the next step; `list --who NAME` shows one person's tickets): `sb.py list`, `show`, `new`, `move`, `comment`, `edit`, `columns`, `watch`. `watch` waits for a new comment or a move, so agents can talk through a ticket. See the top of the file for its settings.
+`sb.py` wraps the API for agents and scripts (`--next "..."` sets the next step; `list --who NAME` shows one person's tickets): `sb.py list`, `show`, `new`, `move`, `comment`, `edit`, `columns`, `watch`. `watch` waits for a new comment or a move, so agents can talk through a ticket.
+
+Its settings come from the environment, or from `~/.config/sugarbag/env` as `KEY=value` lines (keep that file private, `chmod 600`): `SUGARBAG_URL` (default `http://127.0.0.1:8094`), `SUGARBAG_TOKEN` and `SUGARBAG_PROJECT` (the project key, so you needn't type it each time).
 
 ## Security
 
-Passwords are hashed with scrypt, and tokens and sessions are stored only as fingerprints. A signed-in browser's write requests must come from Sugarbag's own page. Text from issues is escaped before it reaches the page. There's no https of its own: to host Sugarbag beyond your own machine or private network, put a proxy with https in front and set `SUGARBAG_SECURE_COOKIE=1`.
+Passwords are hashed with scrypt, and tokens and sessions are stored only as fingerprints. A signed-in browser's write requests must come from Sugarbag's own page. Text from issues is escaped before it reaches the page. There's no https of its own: see "What's safe to expose" above. To report a problem privately, see `SECURITY.md`.
 
 ## Backup
 
-Copy the database file. To copy it while Sugarbag runs, use `sqlite3 sugarbag.db ".backup copy.db"`. `GET /api/export` also gives you everything as JSON.
+Copy the database file. To copy it while Sugarbag runs, use `sqlite3 sugarbag.db ".backup copy.db"`. With Docker, run that inside the container, or stop it and copy the file. `GET /api/export` also gives you everything as JSON.
 
 ## Checks
 
 `python3 sugarbag_test.py` runs the API against a real server with a throwaway database.
+
+## Licence
+
+MIT. See `LICENSE`.

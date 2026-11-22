@@ -31,7 +31,7 @@ from datetime import date
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 VERSION = "0.1.0"
 HERE = Path(__file__).resolve().parent
@@ -146,18 +146,21 @@ def check_password(password, stored):
     return hmac.compare_digest(attempt, digest)
 
 
-def too_many_failures(ip):
-    # shortcut: counted in memory per address, so a restart clears it. Move to the database if this ever faces the internet.
+def too_many_failures(key):
+    """key is (address, name): behind a proxy everyone shares one address, so one person's wrong guesses must not lock out the rest."""
+    # shortcut: counted in memory, so a restart clears it. Move to the database if this ever faces the internet.
     now = time.time()
     with failed_lock:
-        recent = [t for t in failed_logins.get(ip, []) if now - t < 600]
-        failed_logins[ip] = recent
-        return len(recent) >= 10
+        for old in [k for k, times in failed_logins.items() if now - times[-1] >= 600]:
+            del failed_logins[old]  # forget quiet keys, so the table can't grow for ever
+        if key in failed_logins:  # and old times in a key still in use, or one failure a minute would keep them all
+            failed_logins[key] = [t for t in failed_logins[key] if now - t < 600]
+        return len(failed_logins.get(key, [])) >= 10
 
 
-def note_failure(ip):
+def note_failure(key):
     with failed_lock:
-        failed_logins.setdefault(ip, []).append(time.time())
+        failed_logins.setdefault(key, []).append(time.time())
 
 
 # --- Rules ---
@@ -304,6 +307,18 @@ def position_before(conn, project_id, status, before_key):
 
 # --- The API ---
 
+def still_signed_in(c, ctx, role="viewer"):
+    """Inside a write transaction: the user is still active with that role, and the session or token this request came
+    with still exists. Routes that hand out credentials call it, so a sign-in revoked mid-request can't mint a new one."""
+    user = c.execute("SELECT role FROM users WHERE id = ? AND active = 1", (ctx.user["id"],)).fetchone()
+    if ctx.session:
+        held = c.execute("SELECT 1 FROM sessions WHERE hash = ?", (sha(ctx.session),)).fetchone()
+    else:
+        held = c.execute("SELECT 1 FROM tokens WHERE hash = ? AND user_id = ?", (ctx.token_hash, ctx.user["id"])).fetchone()
+    if not user or not held or not role_allows(user["role"], role):
+        raise ApiError(401, "Please sign in.")
+
+
 ROUTES = []
 
 
@@ -335,19 +350,25 @@ def info(ctx):
 
 @route("POST", "/api/login", None)
 def login(ctx):
-    if too_many_failures(ctx.ip):
-        raise ApiError(429, "too many failed attempts: wait ten minutes")
     name, password = text(ctx.body, "name", 80, True), ctx.body.get("password")
+    guesses = (ctx.ip, name.lower())
+    if too_many_failures(guesses):
+        raise ApiError(429, "too many failed attempts: wait ten minutes")
     row = ctx.conn.execute("SELECT * FROM users WHERE name = ? AND active = 1", (name,)).fetchone()
     # A wrong name costs the same time as a wrong password, so the delay doesn't reveal which names exist.
     good = check_password(str(password), row["password"] if row else "00$00")
     if not row or not good:
-        note_failure(ctx.ip)
+        note_failure(guesses)
         log.warning("failed login for %r from %s", name[:80], ctx.ip)
         raise ApiError(401, "wrong name or password")
     token = secrets.token_urlsafe(32)
     now = int(time.time())
     with tx(ctx.conn) as c:
+        # The hash is slow, so a password change can land while it runs. Check again inside the lock, or this login
+        # would make a session after the change had signed everyone out.
+        now_hash = c.execute("SELECT password FROM users WHERE id = ? AND active = 1", (row["id"],)).fetchone()
+        if not now_hash or now_hash["password"] != row["password"]:
+            raise ApiError(401, "wrong name or password")
         c.execute("DELETE FROM sessions WHERE expires < ?", (now,))
         c.execute("INSERT INTO sessions VALUES (?,?,?)", (sha(token), row["id"], now + SESSION_DAYS * 86400))
     ctx.set_cookie(token, SESSION_DAYS * 86400)
@@ -404,7 +425,16 @@ def change_password(ctx):
     new = ctx.body.get("new")
     if not isinstance(new, str) or len(new) < 8:
         raise ApiError(400, "a password needs at least 8 characters")
-    ctx.conn.execute("UPDATE users SET password = ? WHERE id = ?", (hash_password(new), ctx.user["id"]))
+    hashed = hash_password(new)  # slow, so before taking the write lock
+    with tx(ctx.conn) as c:
+        still_signed_in(c, ctx)
+        # Another change may have landed while the old password was checked. Writing over it would undo it.
+        now_hash = c.execute("SELECT password FROM users WHERE id = ? AND active = 1", (ctx.user["id"],)).fetchone()
+        if not now_hash or now_hash["password"] != ctx.user["password"]:
+            raise ApiError(409, "your password was changed meanwhile: sign in again")
+        c.execute("UPDATE users SET password = ? WHERE id = ?", (hashed, ctx.user["id"]))
+        # Sign out everywhere else, so a password change also shuts out whoever had a stolen session. Tokens stay: revoke those in Settings.
+        c.execute("DELETE FROM sessions WHERE user_id = ? AND hash IS NOT ?", (ctx.user["id"], sha(ctx.session) if ctx.session else None))
     return {"ok": True}
 
 
@@ -424,10 +454,13 @@ def add_user_route(ctx):
         raise ApiError(400, "a name can only have letters, numbers, dots and dashes")
     if not isinstance(password, str) or len(password) < 8:
         raise ApiError(400, "a password needs at least 8 characters")
-    try:
-        ctx.conn.execute("INSERT INTO users (name, role, password, created) VALUES (?,?,?,?)", (name, role, hash_password(password), int(time.time())))
-    except sqlite3.IntegrityError:
-        raise ApiError(409, "that name is taken") from None
+    hashed = hash_password(password)  # slow, so before the write lock
+    with tx(ctx.conn) as c:
+        still_signed_in(c, ctx, "admin")
+        try:
+            c.execute("INSERT INTO users (name, role, password, created) VALUES (?,?,?,?)", (name, role, hashed, int(time.time())))
+        except sqlite3.IntegrityError:
+            raise ApiError(409, "that name is taken") from None
     log.info("user added: %s (%s) by %s", name, role, ctx.user["name"])
     return {"name": name, "role": role, "active": True}
 
@@ -441,6 +474,7 @@ def edit_user(ctx, name):
     if role not in ROLES or not isinstance(active, bool):
         raise ApiError(400, "bad role or active")
     with tx(ctx.conn) as c:
+        still_signed_in(c, ctx, "admin")  # it can switch people back on or make them admin
         others = c.execute("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1 AND id != ?", (row["id"],)).fetchone()["n"]
         if not others and (role != "admin" or not active) and row["role"] == "admin":
             raise ApiError(400, "that would leave nobody who can manage users")
@@ -462,7 +496,10 @@ def list_tokens(ctx):
 def add_token(ctx):
     label = text(ctx.body, "label", 80, True)
     token = "sugarbag_" + secrets.token_urlsafe(32)
-    ctx.conn.execute("INSERT INTO tokens (hash, user_id, label, created) VALUES (?,?,?,?)", (sha(token), ctx.user["id"], label, int(time.time())))
+    with tx(ctx.conn) as c:
+        # Switching someone off or revoking this sign-in deletes it; a token made in the same moment must not slip through.
+        still_signed_in(c, ctx, "member")
+        c.execute("INSERT INTO tokens (hash, user_id, label, created) VALUES (?,?,?,?)", (sha(token), ctx.user["id"], label, int(time.time())))
     return {"token": token, "label": label}
 
 
@@ -724,6 +761,7 @@ class Ctx:
     def __init__(self, handler, conn, query, body):
         self.handler, self.conn, self.query, self.body = handler, conn, query, body
         self.ip, self.user, self.session, self.status, self.cookie = handler.client_address[0], None, None, 200, None
+        self.token_hash = None  # the API token this request signed in with, if any
 
     def set_cookie(self, value, age):
         secure = "; Secure" if os.environ.get("SUGARBAG_SECURE_COOKIE") == "1" else ""
@@ -737,6 +775,7 @@ def role_allows(role, needed):
 class Handler(BaseHTTPRequestHandler):
     server_version = "Sugarbag"
     sys_version = ""
+    timeout = 30  # seconds a connection may sit idle; without it, silent connections hold a thread each for ever
 
     def log_message(self, *args):
         pass  # every request would drown the log; writes and logins are logged where they happen
@@ -763,6 +802,7 @@ class Handler(BaseHTTPRequestHandler):
         now = int(time.time())
         if auth.startswith("Bearer "):
             token = auth[7:].strip()
+            ctx.token_hash = sha(token)
             row = ctx.conn.execute("SELECT u.* FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ? AND u.active = 1", (sha(token),)).fetchone()
             if row:
                 ctx.conn.execute("UPDATE tokens SET last_used = ? WHERE hash = ?", (now, sha(token)))
@@ -796,7 +836,13 @@ class Handler(BaseHTTPRequestHandler):
                 break
         else:
             return self.send_json(404, {"error": "Not found."})
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0:  # read(-1) would read until the client hangs up, past the size limit
+            self.close_connection = True
+            return self.send_json(400, {"error": "Bad Content-Length."})
         if length > MAX_BODY:
             self.close_connection = True
             return self.send_json(413, {"error": "That's too big."})
@@ -819,7 +865,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(401, "Please sign in.")
                 if not role_allows(ctx.user["role"], role):
                     raise ApiError(403, "Your role can't do that.")
-            result = fn(ctx, *m.groups())
+            result = fn(ctx, *(unquote(g) for g in m.groups()))  # a name like José arrives as Jos%C3%A9
             self.send_json(ctx.status, result, ctx.cookie)
         except ApiError as e:
             self.send_json(e.status, {"error": e.message})

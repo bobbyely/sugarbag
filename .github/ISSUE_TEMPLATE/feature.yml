@@ -1,0 +1,19 @@
+name: Feature request
+description: An idea for something Sugarbag could do.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Sugarbag stays small on purpose. The README lists what is left out on purpose; please check it first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The job you want done, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you picture it working. Rough is fine.

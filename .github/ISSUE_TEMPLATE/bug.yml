@@ -1,0 +1,29 @@
+name: Bug report
+description: Something does not work the way it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      placeholder: |
+        1. Open the board
+        2. ...
+  - type: input
+    id: setup
+    attributes:
+      label: Sugarbag version, how you run it, and browser
+      placeholder: 0.1.0 (from /info), Docker on Linux, Firefox on a phone
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log or error message
+      description: Remove anything private first, such as names, addresses and tokens.
+      render: text
