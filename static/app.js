@@ -101,10 +101,13 @@ async function start() {
   openFromAddress();
 }
 
+let loads = 0;
 async function load() {
   // The board shows only recently finished work, so it doesn't fetch every old done ticket; the other views get everything.
   const recent = state.view === "board" && state.me?.done_days ? `&done_days=${state.me.done_days}` : "";
-  state.items = state.project ? await api("GET", `/api/items?project=${encodeURIComponent(state.project)}${recent}`) : [];
+  const mine = ++loads;
+  const items = state.project ? await api("GET", `/api/items?project=${encodeURIComponent(state.project)}${recent}`) : [];
+  if (mine === loads) state.items = items;  // an older answer arriving late must not replace a newer view's items
 }
 
 // --- The frame around the board ---
@@ -162,9 +165,8 @@ function drawFilters() {
 
 function matches(i) {
   if (state.assignee && (i.assignee || "-") !== state.assignee) return false;
-  // A sub-task's epic is one level further up, through its parent.
-  const parent = i.type === "subtask" ? state.items.find(p => p.key === i.parent) : null;
-  if (state.epic && i.parent !== state.epic && i.key !== state.epic && parent?.parent !== state.epic) return false;
+  // The server names each item's epic, even a sub-task's whose parent the board left out.
+  if (state.epic && i.epic !== state.epic && i.key !== state.epic) return false;
   const q = state.q.trim().toLowerCase();
   return !q || `${i.key} ${i.title} ${i.labels.join(" ")}`.toLowerCase().includes(q);
 }

@@ -183,7 +183,7 @@ ok(call("DELETE", f"/api/items/{aged['key']}", cookie=mem))
 
 # An older database gets the new columns, with sensible dates.
 old_path = os.path.join(tmp.name, "old.db")
-old_schema = sugarbag.SCHEMA.replace(", hidden_columns TEXT NOT NULL DEFAULT '{}'", "").replace(" status_since INTEGER,", "").replace(" next TEXT NOT NULL DEFAULT '',", "").replace(",\n  done_days INTEGER NOT NULL DEFAULT 14", "")
+old_schema = sugarbag.SCHEMA.replace(", hidden_columns TEXT NOT NULL DEFAULT '{}'", "").replace(" status_since INTEGER,", "").replace(" next TEXT NOT NULL DEFAULT '',", "").replace(",\n  done_days INTEGER NOT NULL DEFAULT 14", "").replace(", done INTEGER)", ")")
 old = sqlite3.connect(old_path)
 old.executescript(old_schema)
 assert "done_days" not in old_schema
@@ -200,6 +200,7 @@ sugarbag.init_db()
 sugarbag.init_db()  # and again, harmlessly
 check = sugarbag.connect()
 assert [r["status_since"] for r in check.execute("SELECT status_since FROM items ORDER BY id")] == [500, 700]
+assert check.execute("SELECT done FROM activity").fetchone()["done"] is None  # added; this old move's column no longer exists
 assert check.execute("SELECT done_days FROM users WHERE name = 'olduser'").fetchone()["done_days"] == 14  # old users get the default
 assert [r["next"] for r in check.execute("SELECT next FROM items ORDER BY id")] == ["", ""]  # old rows keep working, with no next step
 check.close()
@@ -341,6 +342,35 @@ assert len(everything) == 5 and all((i["finished"] is None) == (i["key"] == work
 assert call("GET", "/api/items?project=DW&done_days=-3", cookie=ann)[0] == 400
 done_col = [c for p in ok(call("GET", "/api/projects", cookie=view)) if p["key"] == "DW" for c in p["statuses"] if c["slug"] == "done"][0]
 assert done_col["count"] == 4
+for raw in (b'{"done_days": 1e400}', b'{"done_days": 3.0}'):  # infinity and whole-number floats are refused too, not a crash
+    req = urllib.request.Request(BASE + "/api/me", data=raw, method="PATCH", headers={"Content-Type": "application/json", "Cookie": view})
+    try:
+        urllib.request.urlopen(req)
+        raise AssertionError(raw)
+    except urllib.error.HTTPError as e:
+        assert e.code == 400, (raw, e.code)
+
+# Marking a column done later doesn't rewrite when work was finished: it counts from the move into a column that was done then.
+back = ok(call("POST", "/api/items", {"project": "DW", "title": "reopened"}, cookie=ann), 201)["key"]
+ok(call("POST", f"/api/items/{back}/move", {"status": "done"}, cookie=ann))
+ok(call("POST", f"/api/items/{back}/move", {"status": "review"}, cookie=ann))
+db = sugarbag.connect()
+num = int(back.split("-")[1])
+rows = db.execute("SELECT a.id, a.new FROM activity a JOIN items i ON i.id = a.item_id JOIN projects p ON p.id = i.project_id "
+                  "WHERE p.key = 'DW' AND i.num = ? AND a.field = 'status' ORDER BY a.id", (num,)).fetchall()
+db.execute("UPDATE activity SET at = at - ? WHERE id = ?", (15 * day, rows[0]["id"]))
+db.execute("UPDATE activity SET at = at - ? WHERE id = ?", (13 * day, rows[1]["id"]))
+db.close()
+cols = [c for p in ok(call("GET", "/api/projects", cookie=ann)) if p["key"] == "DW" for c in p["statuses"]]
+ok(call("PUT", "/api/projects/DW/columns", {"columns": [dict(slug=c["slug"], name=c["name"], is_done=c["is_done"] or c["slug"] == "review") for c in cols]}, cookie=ann))
+assert back not in {i["key"] for i in ok(call("GET", "/api/items?project=DW&done_days=14", cookie=ann))}
+ok(call("PUT", "/api/projects/DW/columns", {"columns": [dict(slug=c["slug"], name=c["name"], is_done=c["is_done"]) for c in cols]}, cookie=ann))
+
+# Each item names its epic, so the epic filter finds a sub-task even when the board left its finished parent out.
+ep = ok(call("POST", "/api/items", {"project": "DW", "type": "epic", "title": "E"}, cookie=ann), 201)["key"]
+st = ok(call("POST", "/api/items", {"project": "DW", "type": "story", "title": "S", "parent": ep}, cookie=ann), 201)["key"]
+sk = ok(call("POST", "/api/items", {"project": "DW", "type": "subtask", "title": "K", "parent": st}, cookie=ann), 201)
+assert sk["epic"] == ep and ok(call("GET", f"/api/items/{st}", cookie=ann))["epic"] == ep and ok(call("GET", f"/api/items/{ep}", cookie=ann))["epic"] is None
 env["SUGARBAG_PROJECT"] = "DW"
 assert done_keys["old"] in sb("list", "--all")[1] and done_keys["old"] not in sb("list")[1] and working in sb("list")[1]
 env["SUGARBAG_PROJECT"] = "AB"

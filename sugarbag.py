@@ -69,7 +69,7 @@ CREATE INDEX IF NOT EXISTS items_parent ON items (parent_id);
 CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES items ON DELETE CASCADE,
   user_id INTEGER REFERENCES users ON DELETE SET NULL, body TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES items ON DELETE CASCADE,
-  user_id INTEGER REFERENCES users ON DELETE SET NULL, field TEXT NOT NULL, old TEXT, new TEXT, at INTEGER NOT NULL);
+  user_id INTEGER REFERENCES users ON DELETE SET NULL, field TEXT NOT NULL, old TEXT, new TEXT, at INTEGER NOT NULL, done INTEGER);
 CREATE INDEX IF NOT EXISTS activity_item ON activity (item_id, field);
 """
 
@@ -103,6 +103,10 @@ def upgrade(conn):
         conn.execute("ALTER TABLE users ADD COLUMN hidden_columns TEXT NOT NULL DEFAULT '{}'")
     if not has("users", "done_days"):
         conn.execute("ALTER TABLE users ADD COLUMN done_days INTEGER NOT NULL DEFAULT 14")
+    if not has("activity", "done"):  # whether a move went into a done column, kept as it was then
+        conn.execute("ALTER TABLE activity ADD COLUMN done INTEGER")
+        conn.execute("""UPDATE activity SET done = (SELECT s.is_done FROM items i JOIN statuses s ON s.project_id = i.project_id AND s.slug = activity.new
+                        WHERE i.id = activity.item_id) WHERE field = 'status'""")  # older moves: the best guess is today's columns
     if not has("items", "next"):
         conn.execute("ALTER TABLE items ADD COLUMN next TEXT NOT NULL DEFAULT ''")
     if not has("items", "status_since"):
@@ -222,17 +226,16 @@ def check_children(conn, item_id, new_type):
 # When an item in a done column was finished: the last time it moved into a done column, or its last change if it was
 # made there. NULL for items that aren't done. The board uses it to show only recent done work.
 FINISHED = """CASE WHEN EXISTS (SELECT 1 FROM statuses s WHERE s.project_id = i.project_id AND s.slug = i.status AND s.is_done = 1)
-  THEN COALESCE((SELECT MAX(a.at) FROM activity a JOIN statuses s ON s.project_id = i.project_id AND s.slug = a.new AND s.is_done = 1
-                 WHERE a.item_id = i.id AND a.field = 'status'), i.updated) END"""
+  THEN COALESCE((SELECT MAX(a.at) FROM activity a WHERE a.item_id = i.id AND a.field = 'status' AND a.done = 1), i.updated) END"""
 
 ITEM_SELECT = """
-SELECT i.*, p.key AS project_key, (""" + FINISHED + """) AS finished, u.name AS assignee, c.name AS creator, pi.num AS parent_num, pi.title AS parent_title, pi.type AS parent_type,
+SELECT i.*, p.key AS project_key, CASE WHEN pi.type = 'epic' THEN pi.num WHEN gp.type = 'epic' THEN gp.num END AS epic_num, (""" + FINISHED + """) AS finished, u.name AS assignee, c.name AS creator, pi.num AS parent_num, pi.title AS parent_title, pi.type AS parent_type,
   (SELECT COUNT(*) FROM items k WHERE k.parent_id = i.id) AS children,
   (SELECT COUNT(*) FROM items k JOIN statuses s ON s.project_id = k.project_id AND s.slug = k.status
     WHERE k.parent_id = i.id AND s.is_done = 1) AS children_done,
   (SELECT COUNT(*) FROM comments m WHERE m.item_id = i.id) AS comment_count
 FROM items i JOIN projects p ON p.id = i.project_id
-LEFT JOIN users u ON u.id = i.assignee_id LEFT JOIN users c ON c.id = i.created_by LEFT JOIN items pi ON pi.id = i.parent_id
+LEFT JOIN users u ON u.id = i.assignee_id LEFT JOIN users c ON c.id = i.created_by LEFT JOIN items pi ON pi.id = i.parent_id LEFT JOIN items gp ON gp.id = pi.parent_id
 """
 
 
@@ -240,7 +243,7 @@ def item_json(row):
     key = row["project_key"]
     return {"key": f"{key}-{row['num']}", "project": key, "type": row["type"], "title": row["title"], "body": row["body"],
             "status": row["status"], "priority": row["priority"], "assignee": row["assignee"], "labels": json.loads(row["labels"]),
-            "parent": f"{key}-{row['parent_num']}" if row["parent_num"] else None, "parent_title": row["parent_title"], "parent_type": row["parent_type"],
+            "parent": f"{key}-{row['parent_num']}" if row["parent_num"] else None, "parent_title": row["parent_title"], "epic": f"{key}-{row['epic_num']}" if row["epic_num"] else None, "parent_type": row["parent_type"],
             "start": row["start_date"], "due": row["due_date"], "ref": row["ref"], "next": row["next"], "status_since": row["status_since"], "finished": row["finished"], "position": row["position"], "children": row["children"],
             "children_done": row["children_done"], "comment_count": row["comment_count"], "created_by": row["creator"], "created": row["created"], "updated": row["updated"]}
 
@@ -283,8 +286,12 @@ def find_assignee(conn, name):
 
 
 def record(conn, item_id, user_id, field, old, new):
-    conn.execute("INSERT INTO activity (item_id, user_id, field, old, new, at) VALUES (?,?,?,?,?,?)",
-                 (item_id, user_id, field, None if old is None else str(old), None if new is None else str(new), int(time.time())))
+    # A move notes whether it went into a done column, so marking or removing a column later doesn't rewrite when work was finished.
+    done = conn.execute("SELECT s.is_done FROM items i JOIN statuses s ON s.project_id = i.project_id AND s.slug = ? WHERE i.id = ?",
+                        (new, item_id)).fetchone() if field == "status" else None
+    conn.execute("INSERT INTO activity (item_id, user_id, field, old, new, at, done) VALUES (?,?,?,?,?,?,?)",
+                 (item_id, user_id, field, None if old is None else str(old), None if new is None else str(new), int(time.time()),
+                  done["is_done"] if done else None))
 
 
 def bottom_of(conn, project_id, status):
@@ -350,10 +357,10 @@ NAME = re.compile(r"^[\w.-]+$")
 def day_count(value):
     """How many days of done work to show: a whole number from 0 (all of it) to 3650."""
     try:
-        days = int(value)
-    except (TypeError, ValueError):
+        days = -1 if isinstance(value, (bool, float)) else int(value)
+    except (TypeError, ValueError, OverflowError):
         days = -1
-    if isinstance(value, bool) or isinstance(value, float) or not 0 <= days <= 3650:
+    if not 0 <= days <= 3650:
         raise ApiError(400, "done_days must be a whole number from 0 to 3650")
     return days
 

@@ -33,7 +33,7 @@ Or with Docker Compose: see `compose.example.yml`.
 ## What's in it
 
 - **Board:** starts with Ideas (the backlog), Selected for development, In progress, Blocked, Review and Done. Each project can have its own columns. Drag with a mouse. On a phone, rest a finger on a card first, so a swipe still scrolls.
-- **Done stays short:** a done column shows only tickets finished in the last 14 days (finished means when it last moved into a done column, or its last change if it was made there). **Show all N done** at the foot of the column lists every one, newest first, with a way back to the board.
+- **Done stays short:** a done column shows only tickets finished in the last 14 days (finished means when it last moved into a column that was done at the time, or its last change if it was made there). **Show all N done** at the foot of the column lists every one, newest first, with a way back to the board.
 - **Levels:** Epic > Story, Task or Bug > Sub-task. Stories and tasks sit level, so nobody has to decide which contains which. A sub-task gets its own card while it's in a working column, past the first two and not finished, with its parent's name on it.
 - **Issues:** keys such as `ABO-12`, priority, assignee (the owner), a one-line next step such as "Ann tests it on the phone" (shown on the card under the title), labels, start and due dates, Markdown description, comments, history. An issue opens in the middle of the screen (`/#ABO-12`) or as its own page (`/?issue=ABO-12`).
 - **List:** everything, nested, including epics and sub-tasks.
@@ -79,7 +79,7 @@ JSON. Sign in with `Authorization: Bearer <token>`. Make a token in the page's s
 | `GET /api/projects` | Projects and their columns, each with `count`, the number of items in it. |
 | `POST /api/projects` | `{key, name}`. Admin. |
 | `PUT /api/projects/ABO/columns` | `{columns: [{slug, name, is_done}], move: {old_slug: new_slug}}`: the whole list, in order. Leave out `slug` for a new column. A removed column with items in it needs a `move`. Admin. |
-| `GET /api/items?project=ABO` | Items. Also `status`, `type`, `assignee`, `label`, `parent`, `ref`, `q`. `done_days=14` leaves out done items finished more than 14 days ago (epics stay); without it you get everything. Each item has `finished`: when it was finished, or null if it isn't done. |
+| `GET /api/items?project=ABO` | Items, each with its `epic` (a sub-task's too). Also `status`, `type`, `assignee`, `label`, `parent`, `ref`, `q`. `done_days=14` leaves out done items finished more than 14 days ago (epics stay); without it you get everything. Each item has `finished`: when it was finished, or null if it isn't done. |
 | `POST /api/items` | `{project, title, type, parent, status, priority, assignee, next, labels, start, due, body, ref}`. `ref` is your own unique name for it: sending the same one twice gets a 409, so a script is safe to rerun. |
 | `GET /api/items/ABO-12` | One item, with its sub-items, comments and history. |
 | `PATCH /api/items/ABO-12` | Change any of those fields. |
