@@ -306,10 +306,30 @@ assert sb("show", "AB-99999")[0] != 0
 env["SUGARBAG_TOKEN"] = ""
 assert "No token" in sb("list")[2]
 
-# Too many wrong passwords.
+# Too many wrong passwords. Only that name is locked: behind a proxy everyone shares one address.
 for _ in range(10):
     call("POST", "/api/login", {"name": "ann", "password": "wrong"})
 assert call("POST", "/api/login", {"name": "ann", "password": "password-1"})[0] == 429
+assert call("POST", "/api/login", {"name": "Ann", "password": "password-1"})[0] == 429  # same name in other letters
+sign_in("view", "password-3")
+
+# Changing your password signs you out everywhere else.
+other = sign_in("view", "password-3")
+ok(call("POST", "/api/password", {"old": "password-3", "new": "password-33"}, cookie=view))
+assert ok(call("GET", "/api/me", cookie=view))["name"] == "view"  # the session that changed it stays
+assert call("GET", "/api/me", cookie=other)[0] == 401
+
+# A user name outside plain ASCII can still be managed from the page, which sends it percent-encoded.
+ok(call("POST", "/api/users", {"name": "José", "password": "password-5"}, cookie=ann))
+assert ok(call("PATCH", "/api/users/Jos%C3%A9", {"role": "viewer"}, cookie=ann))["role"] == "viewer"
+
+# A body length the server can't trust is refused before anything is read, and a silent connection is let go.
+import socket  # noqa: E402
+for length in (b"-1", b"lots"):
+    with socket.create_connection(("127.0.0.1", server.server_address[1])) as s:
+        s.sendall(b"POST /api/login HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: " + length + b"\r\n\r\n{}")
+        assert s.recv(100).split(b" ")[1] == b"400"
+assert sugarbag.Handler.timeout
 
 server.shutdown()
 print("sugarbag ok")

@@ -31,7 +31,7 @@ from datetime import date
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 VERSION = "0.1.0"
 HERE = Path(__file__).resolve().parent
@@ -146,18 +146,19 @@ def check_password(password, stored):
     return hmac.compare_digest(attempt, digest)
 
 
-def too_many_failures(ip):
-    # shortcut: counted in memory per address, so a restart clears it. Move to the database if this ever faces the internet.
+def too_many_failures(key):
+    """key is (address, name): behind a proxy everyone shares one address, so one person's wrong guesses must not lock out the rest."""
+    # shortcut: counted in memory, so a restart clears it. Move to the database if this ever faces the internet.
     now = time.time()
     with failed_lock:
-        recent = [t for t in failed_logins.get(ip, []) if now - t < 600]
-        failed_logins[ip] = recent
-        return len(recent) >= 10
+        for old in [k for k, times in failed_logins.items() if now - times[-1] >= 600]:
+            del failed_logins[old]  # forget quiet keys, so the table can't grow for ever
+        return sum(now - t < 600 for t in failed_logins.get(key, [])) >= 10
 
 
-def note_failure(ip):
+def note_failure(key):
     with failed_lock:
-        failed_logins.setdefault(ip, []).append(time.time())
+        failed_logins.setdefault(key, []).append(time.time())
 
 
 # --- Rules ---
@@ -335,14 +336,15 @@ def info(ctx):
 
 @route("POST", "/api/login", None)
 def login(ctx):
-    if too_many_failures(ctx.ip):
-        raise ApiError(429, "too many failed attempts: wait ten minutes")
     name, password = text(ctx.body, "name", 80, True), ctx.body.get("password")
+    guesses = (ctx.ip, name.lower())
+    if too_many_failures(guesses):
+        raise ApiError(429, "too many failed attempts: wait ten minutes")
     row = ctx.conn.execute("SELECT * FROM users WHERE name = ? AND active = 1", (name,)).fetchone()
     # A wrong name costs the same time as a wrong password, so the delay doesn't reveal which names exist.
     good = check_password(str(password), row["password"] if row else "00$00")
     if not row or not good:
-        note_failure(ctx.ip)
+        note_failure(guesses)
         log.warning("failed login for %r from %s", name[:80], ctx.ip)
         raise ApiError(401, "wrong name or password")
     token = secrets.token_urlsafe(32)
@@ -404,7 +406,10 @@ def change_password(ctx):
     new = ctx.body.get("new")
     if not isinstance(new, str) or len(new) < 8:
         raise ApiError(400, "a password needs at least 8 characters")
-    ctx.conn.execute("UPDATE users SET password = ? WHERE id = ?", (hash_password(new), ctx.user["id"]))
+    with tx(ctx.conn) as c:
+        c.execute("UPDATE users SET password = ? WHERE id = ?", (hash_password(new), ctx.user["id"]))
+        # Sign out everywhere else, so a password change also shuts out whoever had a stolen session. Tokens stay: revoke those in Settings.
+        c.execute("DELETE FROM sessions WHERE user_id = ? AND hash IS NOT ?", (ctx.user["id"], sha(ctx.session) if ctx.session else None))
     return {"ok": True}
 
 
@@ -737,6 +742,7 @@ def role_allows(role, needed):
 class Handler(BaseHTTPRequestHandler):
     server_version = "Sugarbag"
     sys_version = ""
+    timeout = 30  # seconds a connection may sit idle; without it, silent connections hold a thread each for ever
 
     def log_message(self, *args):
         pass  # every request would drown the log; writes and logins are logged where they happen
@@ -796,7 +802,13 @@ class Handler(BaseHTTPRequestHandler):
                 break
         else:
             return self.send_json(404, {"error": "Not found."})
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0:  # read(-1) would read until the client hangs up, past the size limit
+            self.close_connection = True
+            return self.send_json(400, {"error": "Bad Content-Length."})
         if length > MAX_BODY:
             self.close_connection = True
             return self.send_json(413, {"error": "That's too big."})
@@ -819,7 +831,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(401, "Please sign in.")
                 if not role_allows(ctx.user["role"], role):
                     raise ApiError(403, "Your role can't do that.")
-            result = fn(ctx, *m.groups())
+            result = fn(ctx, *(unquote(g) for g in m.groups()))  # a name like José arrives as Jos%C3%A9
             self.send_json(ctx.status, result, ctx.cookie)
         except ApiError as e:
             self.send_json(e.status, {"error": e.message})
